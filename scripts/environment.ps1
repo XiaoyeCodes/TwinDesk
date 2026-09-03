@@ -1,0 +1,14 @@
+$ErrorActionPreference = 'Stop'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$ToolRoot = Join-Path $RepoRoot '.tools'
+$DependencyLock = Get-Content -LiteralPath (Join-Path $RepoRoot 'config/dependencies.lock.json') -Raw | ConvertFrom-Json
+$Dotnet = Join-Path $ToolRoot 'dotnet/dotnet.exe'
+$NodeDirectory = Join-Path $ToolRoot ('node/node-v' + $DependencyLock.node.version + '-win-x64')
+$Node = Join-Path $NodeDirectory 'node.exe'
+$Npm = Join-Path $NodeDirectory 'npm.cmd'
+$env:DOTNET_ROOT = Join-Path $ToolRoot 'dotnet'
+$env:DOTNET_CLI_HOME = Join-Path $ToolRoot 'dotnet-home'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+$env:DOTNET_NOLOGO = '1'
+$env:NUGET_PACKAGES = Join-Path $ToolRoot 'nuget'
+$env:PATH = $NodeDirectory + ';' + $env:DOTNET_ROOT + ';' + $env:PATH

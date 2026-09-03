@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>浏览器内操作Demo</title>
+<style>
+  body { margin:0; background:#1e1e1e; color:#ddd; font-family: "Microsoft YaHei", sans-serif; }
+  #status { padding:10px 14px; font-size:14px; border-bottom:1px solid #333; }
+  #status.ok { color:#4caf50; }
+  #status.err { color:#f44336; }
+  #wrap { display:flex; justify-content:center; padding:20px; }
+  canvas { border:1px solid #444; cursor:crosshair; background:#000; outline:none; }
+  #tip { text-align:center; color:#888; font-size:12px; padding-bottom:16px; }
+</style>
+</head>
+<body>
+<div id="status">连接中...</div>
+<div id="wrap">
+  <canvas id="canvas" width="800" height="600" tabindex="0"></canvas>
+</div>
+<div id="tip">点击画面后即可用键盘输入；此demo为验证可行性用，非生产版本</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+let winWidth = 800, winHeight = 600;
+
+function connect() {
+  const ws = new WebSocket('ws://localhost:8766');
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    statusEl.textContent = '已连接，等待画面推流...';
+    statusEl.className = 'ok';
+  };
+  ws.onclose = () => {
+    statusEl.textContent = '连接已断开，2秒后自动重试...（请确认 server.py 正在运行）';
+    statusEl.className = 'err';
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => {
+    ws.close();
+  };
+
+  ws.onmessage = (event) => {
+    const buf = new Uint8Array(event.data);
+    const w = (buf[0] << 8) | buf[1];
+    const h = (buf[2] << 8) | buf[3];
+    const jpegData = buf.slice(4);
+
+    if (w !== winWidth || h !== winHeight) {
+      winWidth = w; winHeight = h;
+      canvas.width = w; canvas.height = h;
+    }
+
+    const blob = new Blob([jpegData], { type: 'image/jpeg' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+    statusEl.textContent = `已连接，画面 ${w}x${h}`;
+    statusEl.className = 'ok';
+  };
+
+  currentWs = ws;
+}
+
+let currentWs = null;
+connect();
+
+function send(obj) {
+  if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+    currentWs.send(JSON.stringify(obj));
+  }
+}
+
+function toWinCoord(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+  const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+  return { x, y };
+}
+
+let isDragging = false;
+
+canvas.addEventListener('mousemove', (e) => {
+  // 只有按住鼠标拖拽时才转发mousemove(比如拖拽选中文字)
+  // 平时悬停不转发, 避免真实鼠标被不停拽走导致连点击都没法瞄准
+  if (!isDragging) return;
+  const { x, y } = toWinCoord(e);
+  send({ type: 'mousemove', x, y });
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  canvas.focus();
+  isDragging = true;
+  const { x, y } = toWinCoord(e);
+  send({ type: 'mousedown', x, y });
+});
+
+canvas.addEventListener('mouseup', () => {
+  isDragging = false;
+  send({ type: 'mouseup' });
+});
+
+canvas.addEventListener('keydown', (e) => {
+  e.preventDefault();
+  send({ type: 'keydown', key: e.key });
+});
+
+canvas.addEventListener('keyup', (e) => {
+  e.preventDefault();
+  send({ type: 'keyup', key: e.key });
+});
+
+// 防止右键菜单干扰操作
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+</script>
+</body>
+</html>

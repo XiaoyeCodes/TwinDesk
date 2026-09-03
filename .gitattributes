@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Preserve the exact user-supplied Demo bytes and its recorded SHA-256 baseline.
+/README.md -text
+/server.py -text
+/index.html -text
+/legacy/demo-v3/README.md -text
+/legacy/demo-v3/server.py -text
+/legacy/demo-v3/index.html -text
