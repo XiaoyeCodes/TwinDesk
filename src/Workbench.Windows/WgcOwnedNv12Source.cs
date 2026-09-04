@@ -30,7 +30,7 @@ public sealed class WgcOwnedNv12Source : IProbeFrameSource
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private TimeSpan nextSnapshot;
     private long lastTime = -10, generation;
-    private uint sceneVersion, outputIndex;
+    private uint sceneVersion, composedVersion, outputIndex;
     private OwnedWindowScene? scene;
     private bool dirty, disposed;
     public IMFDXGIDeviceManager DeviceManager { get; private set; } = null!;
@@ -39,6 +39,8 @@ public sealed class WgcOwnedNv12Source : IProbeFrameSource
     public IReadOnlyList<object> SceneHistory => history.AsReadOnly();
     public int CapturedFrames { get; private set; }
     public int SupersededFrames { get; private set; }
+    public int ActiveCaptureCount => captures.Count;
+    public long CaptureBindingsCreated => generation;
 
     public WgcOwnedNv12Source(WindowInfo root, int width, int height)
     {
@@ -79,6 +81,7 @@ public sealed class WgcOwnedNv12Source : IProbeFrameSource
             compositor.Draw(source.View,node.Destination);
         }
         compositor.End();
+        composedVersion = sceneVersion;
         using var inputView = videoDevice.CreateVideoProcessorInputView(canvas, enumerator,
             new VideoProcessorInputViewDescription { ViewDimension = VideoProcessorInputViewDimension.Texture2D });
         using var output = device.CreateTexture2D(TextureDescription(width, height, Format.NV12, BindFlags.RenderTarget));
@@ -165,6 +168,30 @@ public sealed class WgcOwnedNv12Source : IProbeFrameSource
     private static Texture2DDescription TextureDescription(int w, int h, Format format, BindFlags bind) => new()
     { Width=(uint)w, Height=(uint)h, MipLevels=1, ArraySize=1, Format=format, SampleDescription=new SampleDescription(1,0), Usage=ResourceUsage.Default, BindFlags=bind };
 
+    /// <summary>Explicit local fixture diagnostic only; never called by the streaming path.</summary>
+    public ScenePixelSnapshot ReadbackForDiagnostics()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (scene is null || composedVersion == 0 || composedVersion != sceneVersion)
+            throw new InvalidOperationException("No complete composed scene for this version.");
+        var description = canvas.Description;
+        description.Usage = ResourceUsage.Staging;
+        description.BindFlags = BindFlags.None;
+        description.CPUAccessFlags = CpuAccessFlags.Read;
+        using var staging = device.CreateTexture2D(description);
+        context.CopyResource(staging, canvas);
+        var mapped = context.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            int stride = checked(scene.Bounds.Width * 4);
+            byte[] bytes = new byte[checked(stride * scene.Bounds.Height)];
+            for (int y = 0; y < scene.Bounds.Height; y++)
+                System.Runtime.InteropServices.Marshal.Copy(mapped.DataPointer + checked((int)mapped.RowPitch*y), bytes, stride*y, stride);
+            return new(scene, composedVersion, stride, bytes);
+        }
+        finally { context.Unmap(staging, 0); }
+    }
+
     public void Dispose()
     {
         if (disposed) return; disposed = true;
@@ -245,3 +272,5 @@ public sealed class WgcOwnedNv12Source : IProbeFrameSource
         }
     }
 }
+
+public sealed record ScenePixelSnapshot(OwnedWindowScene Scene, uint Version, int Stride, byte[] Bgra);
