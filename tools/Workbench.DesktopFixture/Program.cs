@@ -13,6 +13,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if(args.Length==2 && args[0]=="--verify-input")return NativeInputVerification.Run(args[1]);
         if (args.SequenceEqual(["--interactive"]))
         {
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -56,6 +57,7 @@ internal static class Program
     private static int Verify(Form root, int cycles, string output, CancellationToken cancellation)
     {
         var checks = new List<object>(); var resources = new List<object>();
+        object? occlusionSetup = null;
         WgcOwnedNv12Source? source = null;
         LayeredFixtureWindow? popup = null;
         Form? unrelated = null, nested = null, modal = null;
@@ -119,7 +121,8 @@ internal static class Program
             nint occluderHandle = 0;
             Ui(()=> {
                 unrelated=new Form { Text="TwinDesk unrelated magenta occluder", FormBorderStyle=FormBorderStyle.None,
-                    StartPosition=FormStartPosition.Manual,Bounds=new(rootInfo.Bounds.X+20,rootInfo.Bounds.Y+360,200,160),BackColor=Color.Magenta,AutoScaleMode=AutoScaleMode.None };
+                    StartPosition=FormStartPosition.Manual,Bounds=new(rootInfo.Bounds.X+20,rootInfo.Bounds.Y+360,200,160),BackColor=Color.Magenta,AutoScaleMode=AutoScaleMode.None,
+                    TopMost=true }; // Only our own temporary occluder; do not move or hide other applications.
                 unrelated.Show(); occluderHandle = unrelated.Handle;
                 // A newly painted marker proves this is not a cached pre-occlusion root frame.
                 root.Controls.Add(new Panel { Location=new Point(20,60),Size=new Size(40,30),BackColor=Color.Lime });
@@ -127,6 +130,8 @@ internal static class Program
             });
             Marshal.ThrowExceptionForHR(DwmFlush());
             nint cover = WindowFromPoint(new Point(rootInfo.Bounds.X+80,rootInfo.Bounds.Y+420));
+            occlusionSetup = new { expectedHandle=(long)occluderHandle, actualHandle=(long)cover,
+                point=new { x=rootInfo.Bounds.X+80,y=rootInfo.Bounds.Y+420 }, matches=cover==occluderHandle };
             if (cover != occluderHandle) throw new InvalidOperationException("Fixture occluder is not actually covering the reference point.");
             Check("unrelated-occluder-excluded",2,s=>Alpha(s,rootInfo) && Is(s,rootInfo,80,420,0,0,255)
                 && Is(s,rootInfo,30,70,0,255,0) && s.Scene.Nodes.All(n=>n.Window.Handle!=occluderHandle),true);
@@ -174,7 +179,7 @@ internal static class Program
         using(var report=new FileStream(Path.Combine(output,"report.json"),FileMode.CreateNew))
             JsonSerializer.Serialize(report,new { status=failure is null?"PASS":"FAIL",scope="SC02 synthetic real Windows/WGC/GPU fixture; explicit CPU pixel readback; not browser/input/NX/TIA acceptance",
                 at=DateTimeOffset.Now,buildIdentity=identity,rootInfo,cycles,checks,resources,scenes=source?.SceneHistory,
-                resourceStatus="OBSERVED_NOT_ENDURANCE", error=failure?.ToString(),captured=source?.CapturedFrames,
+                resourceStatus="OBSERVED_NOT_ENDURANCE", occlusionSetup, error=failure?.ToString(),captured=source?.CapturedFrames,
                 activeCapturesAfterDispose=source?.ActiveCaptureCount },new JsonSerializerOptions(JsonSerializerDefaults.Web){WriteIndented=true});
         Console.WriteLine($"Evidence: {output}");
         return failure is null?0:1;

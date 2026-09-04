@@ -115,3 +115,9 @@ Presentations 技能只用于源 PPT 内容核对；OpenAI Docs 影响目标正�
 设计 1.2 后已实现有界同进程 owner 场景、D3D11 预乘 Alpha 合成和异步帧版本关联，真实 NX 文件菜单及原生文件框可在同一流显示/消失。证据、失败观察、最终构建哈希与 SC 状态见 [M1_SCENE_EVIDENCE.md](./M1_SCENE_EVIDENCE.md)。先前关于“固定场景版本、没有合成”的段落是历史记录；当前仍无产品输入与完整工作流验收。
 
 本次新增实现参考为 Microsoft [D3DCompile](https://learn.microsoft.com/en-us/windows/win32/api/d3dcompiler/nf-d3dcompiler-d3dcompile) 和 [D3D11 混合状态](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-blend-state)。它们说明 shader 编译和混合配置，不保证 NX/TIA 的所有弹窗行为。44 项 C#、5 项 JS 及实际浏览器短时结果按各自范围记证据。Computer Use 只用于真实 NX 菜单/文件框的观察和打开/取消，不能冒充项目输入链；未编辑/保存模型、未改变系统/许可或公网设置。
+
+## 13. 2026-09-04 场景夹具与输入核心
+
+当前结果见 [场景夹具复测](./M1_FIXTURE_EVIDENCE.md) 和 [M1-02 输入核心](./M1_INPUT_CORE_EVIDENCE.md)。重新核对 Microsoft SendInput、KEYBDINPUT、MOUSEINPUT 的原始文档，落实部分提交不能假定未执行、Unicode 与扫描码分离、虚拟桌面物理坐标等实现约束。原生后端尚未接入，本次 L0 测试不证明实际注入成功。
+
+Computer Use 技能影响本轮真实 NX 验证：新建框索引/焦点不可靠时停止文本操作并取消，明确保留 N0/编辑参数框未验证。没有用其他 UI 自动化绕过这个限制，仍继续独立输入核心实现；没有把工具操作或测试计数冒充网页远控验收。

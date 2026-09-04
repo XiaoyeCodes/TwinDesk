@@ -57,4 +57,6 @@ try {
     [ordered]@{time=(Get-Date).ToString('o');scope='C# tests including synthetic GPU alpha pixels, JavaScript scene association tests, parse, actual generated-frame encoders; not browser or NX acceptance';checks=$mediaChecks.ToArray();sources=$mediaSources} |
         ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $mediaRunPath 'report.json') -Encoding utf8
     Write-Host "Media evidence: $mediaRunPath"
+    # Expected negative CLI cases return 1; do not leak that code to a successful caller chain.
+    $global:LASTEXITCODE = 0
 } finally { Pop-Location }
