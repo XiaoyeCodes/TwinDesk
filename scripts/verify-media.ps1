@@ -16,7 +16,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Probe build failed.' }
     & $Node -e 'const fs=require("fs"),vm=require("vm");new vm.Script(fs.readFileSync("tools/Workbench.MediaProbe/probe.html","utf8").match(/<script>([\s\S]*?)<\/script>/)[1],{filename:"probe-inline.js"})'
     if ($LASTEXITCODE -ne 0) { throw 'Browser JavaScript syntax check failed.' }
-    & $Node --test tests/scene-timeline.test.cjs tests/frame-presenter.test.cjs tests/input-client.test.cjs tests/jpeg-decoder.test.cjs tests/f0-pointer-calibration.test.cjs tests/local-console.test.cjs
+    & $Node --test tests/scene-timeline.test.cjs tests/frame-presenter.test.cjs tests/input-client.test.cjs tests/input-move-queue.test.cjs tests/jpeg-decoder.test.cjs tests/f0-pointer-calibration.test.cjs tests/local-console.test.cjs
     if ($LASTEXITCODE -ne 0) { throw 'Scene timeline tests failed.' }
     $mediaProbeDll = Join-Path $RepoRoot 'tools/Workbench.Probe/bin/Debug/net10.0-windows10.0.19041.0/Workbench.Probe.dll'
     foreach ($mediaBackend in @('hardware','software')) {

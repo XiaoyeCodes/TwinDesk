@@ -19,6 +19,8 @@ class ProbeLocalConsole {
     if(!this.active||!Array.isArray(events)||events.length>128)throw Error('Invalid local device batch');
     for(const e of events) {
       this.events++;
+      // A physical delta is bound to the capture generation at hook reception, never relabeled.
+      if(e.scene&&e.scene!==this.input.scene?.version&&!(e.up&&(e.kind==='Button'||e.kind==='Key')))continue;
       if(e.kind==='Move') {
         if(!Number.isFinite(e.dx)||!Number.isFinite(e.dy)||Math.abs(e.dx)>100000||Math.abs(e.dy)>100000)throw Error('Invalid local motion');
         const rect=this.input.canvas.getBoundingClientRect(),scene=this.input.scene;

@@ -32,3 +32,5 @@
 原始源码快照与 SHA256 位于 artifacts/research/github-local-control-20260904-152823。GitHub REST API 触发限流，commit/tree 查询未完成；目录中的早期仓库元数据 JSON 不可用作版本或维护状态证据，以 research-manifest.json 的失败标记为准。此次未取得固定 commit，不作最近提交日期、最新发布版本或活跃度排名结论。
 
 后续实施已编入 [LOCAL-1 本机任务计划](./LOCAL_IMPLEMENTATION_PLAN.md)，下一项 LC-01；该文档中的参考方向不能视为第三方方案已部署。
+
+后续更新：本轮已实现输入合并与 SPSC 物理桥，公共回归 C#174/JS60，见 [队列证据](./LOCAL_INPUT_QUEUE_EVIDENCE.md)。已通过 git ls-remote 固定 Sunshine v2026.516.143833 和 moonlight-web-stream v2.10.0 的 commit，并校验便携包、独立本地启动/停止和网页登录入口，见 [对照环境](./OPEN_SOURCE_COMPARISON.md)。上面的 API 限流与“未运行”属于早期调研记录；新版仍未配对/串流/真实 NX 对比，不据此变更主路线。

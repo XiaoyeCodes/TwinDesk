@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "scope": "Independent local experiment, not an integrated or redistributed component",
+  "packages": [
+    {
+      "name": "sunshine",
+      "repository": "https://github.com/LizardByte/Sunshine",
+      "version": "v2026.516.143833",
+      "commit": "14ffa6fdaa53f7b51512be2b3d24f3939695403c",
+      "url": "https://github.com/LizardByte/Sunshine/releases/download/v2026.516.143833/Sunshine-Windows-AMD64-portable.zip",
+      "sha256": "0a3af3dde43b8f2c94ffe04b850ad736d6e1be2b75906779d7094a5ad9d4783b",
+      "licenseUrl": "https://raw.githubusercontent.com/LizardByte/Sunshine/14ffa6fdaa53f7b51512be2b3d24f3939695403c/LICENSE",
+      "licenseDocument": "GNU GPL version 3"
+    },
+    {
+      "name": "moonlight-web",
+      "repository": "https://github.com/MrCreativ3001/moonlight-web-stream",
+      "version": "v2.10.0",
+      "commit": "cd9d03cbf9a42b394f7b72a733a2f39cb5f0edd8",
+      "url": "https://github.com/MrCreativ3001/moonlight-web-stream/releases/download/v2.10.0/moonlight-web-x86_64-pc-windows-gnu.zip",
+      "sha256": "1dc3019952c610fbd7deb76dc84e3c4c6f26458ebb44823ea1f02ad883a36da9",
+      "licenseUrl": "https://raw.githubusercontent.com/MrCreativ3001/moonlight-web-stream/cd9d03cbf9a42b394f7b72a733a2f39cb5f0edd8/LICENSE",
+      "licenseDocument": "GNU GPL version 3"
+    }
+  ]
+}

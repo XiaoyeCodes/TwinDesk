@@ -179,3 +179,5 @@ Computer Use 技能影响本轮真实 NX 验证：新建框索引/焦点不可�
 ## GitHub 源码调研补充（2026-09-04）
 
 见 [本机控制开源参考](./GITHUB_LOCAL_CONTROL_RESEARCH.md)。新增 Sunshine + 非官方 moonlight-web-stream 浏览器候选；读取 Sunshine/noVNC 输入处理源码，保留原始快照与哈希。只有调研证据，没有第三方 NX 实测结论。
+
+后续固定版本与实际部署记录见 [独立开源对照](./OPEN_SOURCE_COMPARISON.md)：[Sunshine v2026.516.143833](https://github.com/LizardByte/Sunshine/releases/tag/v2026.516.143833)、[moonlight-web-stream v2.10.0](https://github.com/MrCreativ3001/moonlight-web-stream/releases/tag/v2.10.0)。本地启动/停止和登录入口已核验，尚无第三方 NX 可见响应与延迟结果；输入借鉴实现及其验证边界见 [输入队列证据](./LOCAL_INPUT_QUEUE_EVIDENCE.md)。

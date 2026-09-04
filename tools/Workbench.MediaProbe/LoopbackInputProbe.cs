@@ -83,7 +83,8 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
         public bool VideoClaimed;
         public object Diagnostics { get {lock(outcomes)return new {status=Executor.Status,nativeCode=backend.LastCode,recent=outcomes.ToArray(),
             localArmCode,localActivationAccepted,dispatchCount,meanDispatchMs=dispatchCount==0?0:dispatchTotalMs/dispatchCount,dispatchMaximumMs,
-            localConsole=localBridge is null?null:new {localBridge.Active,localBridge.Reason,localBridge.PhysicalEvents,localBridge.IgnoredInjected}};} }
+            queueWait=Executor.QueueWait.Snapshot(),nativeDispatch=Executor.DispatchTime.Snapshot(),nativeChecks=backend.NativeChecks.Snapshot(),
+            localConsole=localBridge is null?null:new {localBridge.Active,localBridge.Reason,localBridge.PhysicalEvents,localBridge.IgnoredInjected,localBridge.QueueDiagnostics}};} }
         public Controller(WindowInfo root,Guid host,string scope,Func<WindowInfo,bool>? allowDiagnosticRoot,uint streamId,bool localConsole)
         {
             this.host=host;
@@ -176,7 +177,7 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
                             {
                                 try
                                 {
-                                    localBridge=new(binding!.Geometry.Nodes.Select(n=>n.Window.Handle),Executor.Invalidate);
+                                    localBridge=new(binding!.Geometry.Nodes.Select(n=>n.Window.Handle),Executor.Invalidate,binding.Version);
                                     Interlocked.Exchange(ref localArmAt,0);
                                     await Send(new {type="localConsoleState",state="ACTIVE",reason="实体键鼠已转发到网页；F12 退出"});
                                 }
@@ -194,7 +195,7 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
                         if(localBridge is { } bridge)
                         {
                             if(source?.InputBindings.Current is { } binding && Executor.Status.Accepting && WindowsInputEnvironment.InteractiveDesktop())
-                                bridge.Refresh(binding.Geometry.Nodes.Select(n=>n.Window.Handle));
+                                bridge.Refresh(binding.Geometry.Nodes.Select(n=>n.Window.Handle),binding.Version);
                             if(!bridge.Active){await Send(new {type="localConsoleState",state="STOPPED",reason=bridge.Reason});Executor.Invalidate(bridge.Reason);}
                             else if(bridge.Drain() is {Length:>0} events)await Send(new {type="localDevices",events});
                         }

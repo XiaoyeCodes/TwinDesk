@@ -38,3 +38,11 @@ test('F12 cannot be forwarded to NX and closed mode accepts no further batch',()
   assert.throws(()=>f.local.receive([{kind:'Key',code:'F12'}]));assert.equal(f.commands.length,0);
   f.local.close();assert.throws(()=>f.local.receive([{kind:'Move',dx:1,dy:1}]));assert.equal(f.elements.get('#localCursor').hidden,true);
 });
+
+test('old scene physical moves and downs are discarded while matching held releases survive',()=>{
+  const f=fixture();f.local.state({state:'ACTIVE'});f.input.scene.version=2;f.input.buttons.add('Middle');
+  f.local.receive([{kind:'Move',scene:1,dx:10,dy:0},{kind:'Button',scene:1,button:'Left'},
+    {kind:'Key',scene:1,code:'KeyA'},{kind:'Button',scene:1,button:'Middle',up:true},
+    {kind:'Move',scene:2,dx:10,dy:0}]);
+  assert.deepEqual(f.commands.map(c=>c.kind),['ButtonUp','Move']);assert.equal(f.input.buttons.size,0);
+});

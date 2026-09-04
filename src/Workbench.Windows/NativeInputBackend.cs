@@ -12,10 +12,17 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
     public string LastCode { get; private set; }="NOT_CHECKED";
     public string? ReadinessCode=>LastCode;
     public bool HasPendingTransient=>unicodePending.Count!=0;
+    public LatencyWindow NativeChecks {get;}=new();
+    private NativeInputCheck Check(OwnedWindowScene scene,ScreenPoint? point)
+    {
+        long start=System.Diagnostics.Stopwatch.GetTimestamp();
+        try{return environment.Check(scene,point);}
+        finally{NativeChecks.Record(System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);}
+    }
     public bool IsTargetReady(OwnedWindowScene scene,ScreenPoint? point)
     {
         prepared=null;
-        var check=environment.Check(scene,point);LastCode=check.Code;
+        var check=Check(scene,point);LastCode=check.Code;
         if(!check.Allowed)return false;
         if(HasPendingTransient){LastCode="NATIVE_RELEASE_PENDING";return false;}
         prepared=scene;preparedPoint=point;return true;
@@ -28,7 +35,7 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
         if(point!=expectedPoint)return false;
         if(command.Kind is InputKind.KeyUp or InputKind.ButtonUp or InputKind.ReleaseAll)return false;
         if(command.Kind==InputKind.Text)return SendText(scene,command.Text!,checked((nuint)command.Sequence));
-        var check=environment.Check(scene,point);LastCode=check.Code;if(!check.Allowed)return false;
+        var check=Check(scene,point);LastCode=check.Code;if(!check.Allowed)return false;
         nuint marker=checked((nuint)command.Sequence);
         var events=new List<NativeInputEvent>(3);
         if(point is { } p)events.Add(NativeInputEvents.Move(p,check.VirtualDesktop,marker));
@@ -51,7 +58,7 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
     {
         for(int offset=0;offset<text.Length;)
         {
-            var check=environment.Check(scene,null);LastCode=check.Code;if(!check.Allowed)return false;
+            var check=Check(scene,null);LastCode=check.Code;if(!check.Allowed)return false;
             int size=Math.Min(64,text.Length-offset);
             if(char.IsHighSurrogate(text[offset+size-1]))size--; // Never split a surrogate pair between native batches.
             var units=text.AsSpan(offset,size);

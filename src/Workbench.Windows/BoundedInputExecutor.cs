@@ -24,6 +24,8 @@ public sealed class BoundedInputExecutor
     private InputSessionStatus snapshot;
     private string? stopping;
     private bool finished;
+    public LatencyWindow QueueWait {get;}=new();
+    public LatencyWindow DispatchTime {get;}=new();
 
     public BoundedInputExecutor(InputLease lease, WindowInfo root, IInputBackend backend,
         TimeProvider? time = null, int capacity = MaximumQueued)
@@ -43,7 +45,13 @@ public sealed class BoundedInputExecutor
         ArgumentNullException.ThrowIfNull(command);
         if (command.Lease != lease) return Task.FromResult(new InputOutcome(false, "LEASE_STALE"));
         if (!InputCommandValidation.IsValid(command)) return Task.FromResult(new InputOutcome(false, "INVALID_MESSAGE"));
-        return Enqueue(() => session.Dispatch(command), code => new InputOutcome(false, code));
+        long queuedAt=time.GetTimestamp();
+        return Enqueue(() => {
+            QueueWait.Record(time.GetElapsedTime(queuedAt).TotalMilliseconds);
+            long start=time.GetTimestamp();
+            try{return session.Dispatch(command);}
+            finally{DispatchTime.Record(time.GetElapsedTime(start).TotalMilliseconds);}
+        }, code => new InputOutcome(false, code));
     }
 
     public Task<bool> UpdateScene(InputStamp stamp, OwnedWindowScene scene)

@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 
 // L0 browser event/gating tests, deliberately no real DOM, WS or native application.
-function fixture(){
+function fixture(localConsole=false){
   class Element {
     constructor(){this.handlers=new Map();this.value='';this.width=1280;this.height=720;}
     addEventListener(type,fn){this.handlers.set(type,fn);}
@@ -27,11 +27,48 @@ function fixture(){
     setTimeout:()=>1,clearTimeout(){},setInterval:()=>2,clearInterval(){}});
   vm.runInContext(fs.readFileSync('tools/Workbench.MediaProbe/input-client.js','utf8')+'\nthis.Client=ProbeInputClient;',context);
   const client=new context.Client(canvas,error=>errors.push(String(error)));
-  Socket.last.receive({type:'inputHello',lease:{id:'test',generation:1},hostInstanceId:'host',streamId:1,epoch:1});
+  Socket.last.receive({type:'inputHello',lease:{id:'test',generation:1},hostInstanceId:'host',streamId:1,epoch:1,localConsole});
   const scene={version:1,width:1280,height:720,contentRect:{x:128,y:0,width:1024,height:720}};
   function ready(){client.displayed(scene,1);Socket.last.receive({type:'displayAck',accepted:true,stamp:client.stamp(),frame:1});}
   return {client,canvas,elements,document,window,socket:Socket.last,scene,errors,ready};
 }
+
+test('negotiated local mode coalesces only unsent moves and flushes position before a button',()=>{
+  const f=fixture(true);f.ready();
+  f.client.command('Move',{u:.1,v:.5});
+  f.client.command('Move',{u:.2,v:.5});f.client.command('Move',{u:.3,v:.5});
+  f.client.buttons.add('Middle');f.client.command('ButtonDown',{button:'Middle',u:.3,v:.5});
+  f.client.command('Move',{u:.4,v:.5});
+  assert.equal(f.client.submitted,1);
+  for(let sequence=1;sequence<=4;sequence++)f.socket.receive({type:'inputResult',sequence,outcome:{accepted:true,code:'OK'}});
+  const commands=f.socket.messages.filter(m=>m.type==='input').map(m=>m.command);
+  assert.deepEqual(commands.map(c=>c.kind),['Move','Move','ButtonDown','Move']);
+  assert.deepEqual(commands.map(c=>c.sequence),[1,2,3,4]);assert.equal(commands[1].u,.3);
+  assert.equal(f.client.summary().inputScheduling.merged,1);f.client.close();
+});
+
+test('local scene rejection releases immediately and cannot replay queued gesture after new display',()=>{
+  const f=fixture(true);f.ready();f.client.keys.add('ShiftLeft');
+  f.client.command('KeyDown',{key:'ShiftLeft'});f.client.command('Move',{u:.5,v:.6});
+  f.socket.receive({type:'inputResult',sequence:1,outcome:{accepted:false,code:'SCENE_UPDATING'}});
+  assert.equal(f.client.ready,false);assert.equal(f.client.keys.size,0);
+  assert.equal(f.socket.messages.at(-1).command.kind,'ReleaseAll');
+  const next={...f.scene,version:2};f.client.displayed(next,2);
+  f.socket.receive({type:'displayAck',accepted:true,stamp:f.client.stamp(),frame:2});
+  f.socket.receive({type:'inputResult',sequence:2,outcome:{accepted:true,code:'OK'}});
+  assert.equal(f.client.submitted,2);f.client.command('Move',{u:.7,v:.5});
+  assert.equal(f.socket.messages.at(-1).command.stamp.scene,2);f.client.close();
+});
+
+test('local blur cancels unsent work, sends release ahead of the reply and ignores late reply',()=>{
+  const f=fixture(true);f.ready();f.client.buttons.add('Middle');
+  f.client.command('ButtonDown',{button:'Middle',u:.5,v:.5});f.client.command('Move',{u:.6,v:.5});
+  f.window.emit('blur');assert.equal(f.client.submitted,2);
+  assert.equal(f.socket.messages.at(-1).command.kind,'ReleaseAll');
+  f.socket.receive({type:'inputResult',sequence:1,outcome:{accepted:true,code:'OK'}});
+  f.socket.receive({type:'inputResult',sequence:2,outcome:{accepted:true,code:'OK'}});
+  assert.equal(f.client.submitted,2);assert.equal(f.client.moveQueue.pending.length,0);f.client.close();
+});
 test('no input before exact presented-frame acknowledgment',()=>{
   const f=fixture();f.client.command('KeyDown',{key:'KeyA'});assert.equal(f.client.submitted,0);
   f.client.displayed(f.scene,1);f.socket.receive({type:'displayAck',accepted:true,stamp:{scene:1},frame:2});

@@ -1,4 +1,42 @@
 'use strict';
+// Original implementation informed by Sunshine/noVNC scheduling patterns; no upstream code copied.
+// One outstanding action; merge only the adjacent unsent Move in an unchanged gesture/scene.
+class InputMoveQueue {
+  constructor(send,valid,now,fail){this.send=send;this.valid=valid;this.now=now;this.fail=fail;this.pending=[];this.inflight=null;this.merged=0;this.dropped=0;this.maxDepth=0;this.waits=[];}
+  enqueue(entry){
+    if(entry.kind==='ReleaseAll'){
+      this.clear();this.inflight=this.send(entry);return;
+    }
+    const last=this.pending.at(-1);
+    if(entry.kind==='Move'&&last?.kind==='Move'&&last.boundary===entry.boundary){
+      this.pending[this.pending.length-1]=entry;this.merged++;
+    } else {
+      if(this.pending.length>=64){this.clear();this.fail('本机输入队列已满；停止且不重放');return;}
+      this.pending.push(entry);this.maxDepth=Math.max(this.maxDepth,this.pending.length);
+    }
+    this.pump();
+  }
+  pump(){
+    if(this.inflight!==null)return;
+    while(this.pending.length){
+      const entry=this.pending.shift(),age=this.now()-entry.at;
+      if(!entry.release&&(!this.valid(entry)||age>=250)){
+        this.dropped++;
+        if(age>=250&&entry.kind!=='Move'){this.clear();this.fail('本机输入等待过久；手势已停止且不重放');return;}
+        continue;
+      }
+      this.waits.push(age);if(this.waits.length>256)this.waits.shift();
+      this.inflight=this.send(entry);return;
+    }
+  }
+  acknowledge(sequence){if(this.inflight!==sequence)return;this.inflight=null;this.pump();}
+  clear(){this.dropped+=this.pending.length;this.pending=[];}
+  summary(){
+    const a=[...this.waits].sort((x,y)=>x-y),p=q=>a.length?a[Math.ceil(a.length*q)-1]:null;
+    return {merged:this.merged,dropped:this.dropped,maxDepth:this.maxDepth,pending:this.pending.length,
+      browserQueueWait:{samples:a.length,p50Ms:p(.5),p95Ms:p(.95),maxMs:p(1)}};
+  }
+}
 // M1 probe input adapter. No hidden retries, no clipboard, no remote HWND/absolute desktop coordinates.
 class ProbeInputClient {
   static async open(canvas, fail) {
@@ -22,6 +60,8 @@ class ProbeInputClient {
           if(message.type==='inputHello') {
             if(!Number.isInteger(message.streamId)||message.streamId<1||message.streamId>2||message.epoch!==1)throw Error('Invalid input stream identity');
             this.identity=message; clearTimeout(deadline);resolve();
+            if(message.localConsole)this.moveQueue=new InputMoveQueue(e=>this.sendCommand(e.kind,e.payload,e.release),
+              e=>this.ready&&!this.closed&&e.scene===this.scene?.version,()=>this.now(),error=>this.fail(error));
             this.timer=setInterval(()=>this.send({type:'heartbeat'}),2000);
           } else if(message.type==='localConsoleState') {
             this.local?.state(message);
@@ -31,6 +71,7 @@ class ProbeInputClient {
             const expected=this.stamp();
             if(message.accepted && this.scene && ['host','stream','epoch','scene'].every(key=>message.stamp[key]===expected[key]) && message.frame===this.frame)this.ready=true;
             if(this.ready&&this.identity?.localConsole)this.local?.start();
+            this.moveQueue?.pump();
           } else if(message.type==='inputState') {
             document.querySelector('#inputStatus').textContent=`输入 ${message.status.session.reason}；本机 ${message.nativeCode}`;
             if(!message.status.session.active || !message.status.session.ready)this.ready=false;
@@ -45,13 +86,15 @@ class ProbeInputClient {
               this.roundTrips.push({roundTripMs:this.now()-sentAt,dispatchMs:message.dispatchMs??null});
               if(this.roundTrips.length>64)this.roundTrips.shift();
               const sorted=this.roundTrips.map(x=>x.roundTripMs).sort((a,b)=>a-b),label=document.querySelector('#latencyStatus');
-              if(label)label.textContent=`输入往返中位数 ${sorted[Math.floor(sorted.length/2)]} ms · 服务端本次处理 ${Math.round(message.dispatchMs??0)} ms（不含画面回显）`;
+              if(label)label.textContent=`输入往返 P50 ${Math.round(sorted[Math.ceil(sorted.length*.5)-1])} / P95 ${Math.round(sorted[Math.ceil(sorted.length*.95)-1])} ms · 本次派发 ${Math.round(message.dispatchMs??0)} ms · 合并移动 ${this.moveQueue?.merged??0}（不含画面回显）`;
             }
             if(this.results.length===64)this.results.shift();
             this.results.push(message);message.outcome.accepted?this.accepted++:this.rejected++;
             document.querySelector('#inputStatus').textContent=`序号 ${message.sequence}：${message.outcome.code}（不是应用响应证明）`;
             if(!message.outcome.accepted && message.outcome.code!=='POINTER_OUTSIDE_TARGET')this.ready=false;
             if(message.outcome.code==='SCENE_UPDATING')this.release();
+            if(!message.outcome.accepted&&message.outcome.code!=='POINTER_OUTSIDE_TARGET')this.moveQueue?.clear();
+            this.moveQueue?.acknowledge(message.sequence);
             this.calibration?.acknowledge(message.sequence,message.outcome.accepted);
             if(message.sequence===this.disconnectSequence){
               this.disconnectSequence=null;
@@ -129,10 +172,19 @@ class ProbeInputClient {
   stamp(){return {host:this.identity.hostInstanceId,stream:this.identity.streamId,epoch:this.identity.epoch,scene:this.scene?.version??0};}
   command(kind,payload={},release=false){
     if((!this.ready&&!release)||!this.identity||this.closed)return;
+    if(this.moveQueue){
+      this.moveQueue.enqueue({kind,payload:{...payload},release,scene:this.scene?.version,at:this.now(),
+        boundary:JSON.stringify([this.stamp(),[...this.keys].sort(),[...this.buttons].sort()])});return;
+    }
+    this.sendCommand(kind,payload,release);
+  }
+  sendCommand(kind,payload={},release=false){
+    if((!this.ready&&!release)||!this.identity||this.closed)return null;
     this.submitted++;const sequence=++this.sequence;
     if(this.pendingTimes.size>=128)this.pendingTimes.delete(this.pendingTimes.keys().next().value);
     this.pendingTimes.set(sequence,this.now());
     this.send({type:'input',command:{lease:this.identity.lease,sequence,stamp:this.stamp(),displayedFrame:this.frame,kind,...payload}});
+    return sequence;
   }
   point(event){
     if(!this.scene)return null;
@@ -142,7 +194,7 @@ class ProbeInputClient {
     if(x<0||y<0||x>=content.width||y>=content.height)return null;
     return {u:x/content.width,v:y/content.height};
   }
-  freeze(){this.ready=false;this.scene=null;this.frame=0;this.keys.clear();this.buttons.clear();this.pointerButtons.clear();}
+  freeze(){this.moveQueue?.clear();this.ready=false;this.scene=null;this.frame=0;this.keys.clear();this.buttons.clear();this.pointerButtons.clear();}
   displayed(scene,sequence){
     this.calibration?.observe(scene,sequence);
     if(this.scene?.version!==scene.version)this.freeze();
@@ -150,7 +202,7 @@ class ProbeInputClient {
     this.local?.paint();
     this.send({type:'displayed',stamp:this.stamp(),frame:sequence});
   }
-  release(){if(this.keys.size||this.buttons.size)this.command('ReleaseAll',{},true);this.keys.clear();this.buttons.clear();this.pointerButtons.clear();}
-  summary(){return {scope:'Submission replies only; verify visible application effects separately, not P04 latency',disconnectDiagnostic:this.disconnectDiagnostic??null,inputRoundTrips:this.roundTrips,localConsole:this.local?{physicalEventsReceived:this.local.events,active:this.local.active}:null,pointerCalibration:this.calibration?.summary()??null,submitted:this.submitted,accepted:this.accepted,rejected:this.rejected,recent:this.results};}
+  release(){this.moveQueue?.clear();if(this.keys.size||this.buttons.size)this.command('ReleaseAll',{},true);this.keys.clear();this.buttons.clear();this.pointerButtons.clear();}
+  summary(){return {scope:'Submission replies only; verify visible application effects separately, not P04 latency',inputScheduling:this.moveQueue?.summary()??null,disconnectDiagnostic:this.disconnectDiagnostic??null,inputRoundTrips:this.roundTrips,localConsole:this.local?{physicalEventsReceived:this.local.events,active:this.local.active}:null,pointerCalibration:this.calibration?.summary()??null,submitted:this.submitted,accepted:this.accepted,rejected:this.rejected,recent:this.results};}
   close(){if(this.closed)return;this.release();this.local?.close();this.send({type:'stop'});this.closed=true;clearInterval(this.timer);this.listeners.forEach(remove=>remove());this.socket.close();}
 }

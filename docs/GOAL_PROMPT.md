@@ -14,9 +14,9 @@
 
 用户已明确变更：只需要在运行 NX/TIA 的同一台电脑通过浏览器控制，不再要求第二台客户端、LAN、公网/CF或代理兼容。换电脑继续开发不改变该产品范围。远程专属历史验收已被范围变更覆盖，不能标为 PASS；其他真实操作、输入安全、恢复、8小时与发布交付要求保留。
 
-从最近未完成且依赖满足的 LC 任务继续。此交接快照的下一项是 LC-01 时延基线与诊断，然后推进 LC-02 有序移动合并、LC-03 物理桥队列争用、LC-04 原生校验耗时、LC-05 媒体延迟、LC-06 开源对照、LC-07 实体键鼠与真实 NX 验证。若 PROJECT_STATUS 后续已推进，直接接最新下一项，不重做已完成任务。
+从最近未完成且依赖满足的 LC 任务继续。最新增量已实现 LC-01 分段埋点、LC-02 有序移动合并、LC-03 SPSC物理桥，C#174/JS60与原生夹具有限测试通过；LC-06固定便携依赖、独立本地启动/停止已验证，尚未配对/串流。下一项是 LC-01 剩余全链路基线、LC-02/03 实体复测，再据开销推进 LC-04 原生校验、LC-05 媒体延迟及 LC-06 同机焦点/输入兼容和真实A/B，最后 LC-07/SC07/SC08。读 LOCAL_INPUT_QUEUE_EVIDENCE.md 与 OPEN_SOURCE_COMPARISON.md，不重复实现已通过公共部分。若 PROJECT_STATUS 后续已推进，直接接最新下一项，不重做已完成任务。
 
-参考 Sunshine/noVNC 的输入调度，评估 Sunshine + moonlight-web-stream 浏览器对照。研究快照不是固定版本，使用前核对版本、来源、许可。不能直接替换架构或把开源项目宣传性能当 NX 实测。默认保留 React/TypeScript、.NET10 Host/DesktopAgent、WGC、H.264硬编 + WS/WebCodecs、JPEG。现有同机入口是实验探针，尚非正式产品。重大路线变更必须有隔离对比证据、设计说明和回退方法。
+参考 Sunshine/noVNC 的输入调度，评估 Sunshine + moonlight-web-stream 浏览器对照。早期研究快照不是固定版本；新的 config/open-source-comparison.lock.json 已固定发行版、commit与哈希，使用已验证脚本并核对许可。不能直接替换架构或把开源项目宣传性能当 NX 实测。默认保留 React/TypeScript、.NET10 Host/DesktopAgent、WGC、H.264硬编 + WS/WebCodecs、JPEG。现有同机入口是实验探针，尚非正式产品。重大路线变更必须有隔离对比证据、设计说明和回退方法。
 
 先测量并解决已记录的输入积压、LOCAL_DEVICE_QUEUE_BUSY、DISPLAY_ACK_TIMEOUT。SCENE_CHANGED 已有暂停/释放/新场景确认修复，不重复重写。合并移动必须尊重租约/目标/epoch/scene/按键边界，不能重放失败编辑；保留前台、命中、窗口身份、输入释放和锁屏保护。不要仅靠放宽超时、增大队列或提高标称帧率宣告解决。
 

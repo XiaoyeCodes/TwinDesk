@@ -5,14 +5,15 @@ using System.Runtime.InteropServices;
 namespace Workbench.Windows;
 
 public sealed record LocalDeviceEvent(string Kind,int Dx=0,int Dy=0,string? Code=null,
-    string? Button=null,bool Up=false,int WheelX=0,int WheelY=0);
+    string? Button=null,bool Up=false,int WheelX=0,int WheelY=0,uint Scene=0);
 
 // Explicit finite experiment: physical devices -> browser -> normal InputSession.
 // No text logging, direct target input, automatic activation or background startup.
 public sealed class LocalConsoleBridge : IDisposable
 {
-    private readonly object gate=new();
-    private readonly List<LocalDeviceEvent> queue=[];
+    private readonly LocalDeviceQueue queue=new();
+    private uint sceneVersion;
+    public object QueueDiagnostics=>new {queue.MaximumDepth,age=queue.QueueAge.Snapshot()};
     private readonly Action<string> stopInput;
     private readonly Thread thread;
     private readonly TaskCompletionSource ready=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -28,10 +29,10 @@ public sealed class LocalConsoleBridge : IDisposable
     public long PhysicalEvents {get;private set;}
     public long IgnoredInjected {get;private set;}
 
-    public LocalConsoleBridge(IEnumerable<long> windows,Action<string> stopInput)
+    public LocalConsoleBridge(IEnumerable<long> windows,Action<string> stopInput,uint scene=0)
     {
         this.stopInput=stopInput;
-        Refresh(windows);
+        Refresh(windows,scene);
         if(!WindowsInputEnvironment.InteractiveDesktop() || !TargetAllowed())throw new InvalidOperationException("LOCAL_TARGET_NOT_FOREGROUND");
         for(int key=1;key<255;key++)
         {
@@ -44,11 +45,12 @@ public sealed class LocalConsoleBridge : IDisposable
         try{ready.Task.WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();}
         catch{Dispose();throw;}
     }
-    public void Refresh(IEnumerable<long> windows)
+    public void Refresh(IEnumerable<long> windows,uint scene=0)
     {
         var next=windows.Select(w=>(nint)w).ToArray();
         if(next.Length is <1 or >8 || next.Any(w=>w==0))throw new ArgumentException("Invalid local target set.");
         Volatile.Write(ref targets,next);
+        Volatile.Write(ref sceneVersion,scene);
         Volatile.Write(ref deadline,Stopwatch.GetTimestamp()+Stopwatch.Frequency/2);
     }
     private bool TargetAllowed()=>Volatile.Read(ref targets).Contains(GetForegroundWindow());
@@ -61,22 +63,15 @@ public sealed class LocalConsoleBridge : IDisposable
     }
     public LocalDeviceEvent[] Drain()
     {
-        lock(gate){if(!Active){queue.Clear();return [];}var result=queue.ToArray();queue.Clear();return result;}
+        if(!Active)return [];
+        try {var result=queue.Drain();return Active?result:[];}
+        catch(TimeoutException){Stop("LOCAL_DEVICE_QUEUE_EXPIRED");return [];}
     }
     private void Enqueue(LocalDeviceEvent value)
     {
-        // Hooks cannot block on network/UI work. Only adjacent moves may be coalesced.
-        if(!Monitor.TryEnter(gate)){Stop("LOCAL_DEVICE_QUEUE_BUSY");return;}
-        try
-        {
-            if(!Active)return;
-            PhysicalEvents++;
-            if(value.Kind=="Move" && queue.LastOrDefault() is {Kind:"Move"} last)
-                queue[^1]=last with {Dx=last.Dx+value.Dx,Dy=last.Dy+value.Dy};
-            else if(queue.Count>=128)Stop("LOCAL_DEVICE_QUEUE_OVERFLOW");
-            else queue.Add(value);
-        }
-        finally{Monitor.Exit(gate);}
+        if(!Active)return;
+        PhysicalEvents++;
+        if(!queue.TryWrite(value with {Scene=Volatile.Read(ref sceneVersion)}))Stop("LOCAL_DEVICE_QUEUE_OVERFLOW");
     }
     public void Stop(string code="LOCAL_CONSOLE_STOPPED")
     {
@@ -153,7 +148,6 @@ public sealed class LocalConsoleBridge : IDisposable
     {
         Stop();
         if(Thread.CurrentThread!=thread && !thread.Join(TimeSpan.FromSeconds(2)))throw new TimeoutException("Local console thread did not stop.");
-        lock(gate)queue.Clear();
         if(Volatile.Read(ref detachFailed)!=0)throw new InvalidOperationException("Local hook removal unconfirmed; stop the diagnostic process.");
     }
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]private delegate nint Hook(int code,nuint message,nint data);
