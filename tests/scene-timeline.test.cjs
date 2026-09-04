@@ -25,3 +25,14 @@ test('pending callback map has a hard limit and rejects timestamp reuse',()=>{
   for(let i=0;i<16;i++)timeline.submit(i,1,i+1);
   assert.throws(()=>timeline.submit(16,1,17));timeline.complete(0);assert.throws(()=>timeline.submit(15,1,17));
 });
+test('1080p scenes retain their exact geometry and reject stale 720p metadata',()=>{
+  const timeline=new ProbeSceneTimeline(1920,1080);
+  timeline.announce({version:1,width:1920,height:1080,nodeCount:1,contentRect:{x:240,y:0,width:1440,height:1080}});
+  timeline.submit(0,1,1);assert.equal(timeline.complete(0).scene.contentRect.x,240);
+  assert.throws(()=>timeline.announce(scene(2)));
+});
+test('sequence must progress exactly once, and delayed same-scene outputs do not rewind presentation',()=>{
+  const timeline=new ProbeSceneTimeline(1280,720);timeline.announce(scene(1));timeline.submit(0,1,1);
+  assert.throws(()=>timeline.submit(10,1,1));assert.throws(()=>timeline.submit(10,1,3));
+  timeline.submit(10,1,2);assert.equal(timeline.complete(10).present,true);assert.equal(timeline.complete(0).present,false);
+});

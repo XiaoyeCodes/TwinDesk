@@ -13,6 +13,28 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if(args.Length==2 && args[0]=="--verify-local-console")return LocalConsoleVerification.Run(args[1]);
+        if(args.Length==2 && args[0]=="--verify-scene-refresh")return SceneRefreshVerification.Run(args[1]);
+        if(args.Length==2 && args[0]=="--verify-shared-capture")return SharedCaptureVerification.Run(args[1]);
+        if(args.Length==2 && args[0]=="--verify-shared-capture-bgra")return SharedCaptureVerification.Run(args[1],bgra:true);
+        if(args.Length==2 && args[0]=="--verify-shared-capture-trend")return SharedCaptureVerification.Run(args[1],trend:true);
+        if(args.Length==2 && args[0]=="--verify-window-monitors")return WindowMonitorVerification.Run(args[1]);
+        if(args.Length==3 && args[0]=="--verify-capture-session")return CaptureSessionVerification.Run(args[1],args[2]);
+        if(args.Length==5 && args[0]=="--verify-capture-session" && args[3]=="--settle-seconds" && int.TryParse(args[4],out int settleSeconds))return CaptureSessionVerification.Run(args[1],args[2],settleSeconds);
+        if(args.Length==3 && args[0]=="--verify-capture-primitive")return CapturePrimitiveVerification.Run(args[1],args[2]);
+        if(args.Length==2 && args[0]=="--verify-transient-windows")return TransientWindowVerification.Run(args[1]);
+        if(args.Length==2 && args[0]=="--verify-resources")return CaptureResourceVerification.Run(args[1]);
+        if(args.Length==2 && args[0]=="--verify-resource-trend")return CaptureResourceVerification.Run(args[1],cycles:120);
+        if(args.Length==2 && args[0]=="--verify-resource-steady")return CaptureResourceVerification.Run(args[1],cycles:600,roundCount:1);
+        if(args.Length==2 && args[0]=="--verify-resource-lifetimes")return CaptureResourceVerification.Run(args[1],cycles:10,roundCount:12);
+        if(args.Length==2 && args[0]=="--verify-resource-shared")return CaptureResourceVerification.Run(args[1],cycles:10,roundCount:12,sharedDevice:true);
+        if(args.Length==2 && args[0]=="--verify-window-resources")return CaptureResourceVerification.Run(args[1],windowsOnly:true);
+        if(args.Length==2 && args[0]=="--verify-item-resources")return CaptureResourceVerification.Run(args[1],itemsOnly:true);
+        if(args.Length==2 && args[0]=="--verify-item-events")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true);
+        if(args.Length==2 && args[0]=="--verify-native-events")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true,nativeEvents:true);
+        if(args.Length==2 && args[0]=="--verify-raw-events")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true,nativeEvents:true,rawDelegate:true);
+        if(args.Length==2 && args[0]=="--verify-closed-callbacks")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true,nativeEvents:true,afterClosed:true);
+        if(args.SequenceEqual(["--media-scenes"]))return MediaSceneFixture.Run();
         if(args.Length==2 && args[0]=="--verify-input")return NativeInputVerification.Run(args[1]);
         if (args.SequenceEqual(["--interactive"]))
         {
@@ -89,10 +111,14 @@ internal static class Program
                 if (sample is not null)
                 {
                     latest = source.ReadbackForDiagnostics();
+                    var bound = source.InputBindings.Current;
+                    if (bound is null || bound.Version != latest.Version || !bound.Geometry.SameGeometry(latest.Scene)
+                        || latest.Scene.Nodes.Any(node => !source.InputBindings.Verify(node.Window)))
+                        throw new InvalidDataException("Composed fixture scene lacks matching live input bindings.");
                     if (latest.Scene.Nodes.Count == nodes && predicate(latest))
                     {
                         checks.Add(new { name, status="PASS", version=latest.Version, nodes, elapsedMs=clock.Elapsed.TotalMilliseconds,
-                            geometry=latest.Scene, pixels=ProbePixels(latest, rootInfo!) });
+                            geometry=latest.Scene, liveInputBindingsVerified=true, pixels=ProbePixels(latest, rootInfo!) });
                         if (save) Save(latest,Path.Combine(output,name+".png"));
                         Console.WriteLine($"PASS {name}: version={latest.Version}, nodes={nodes}");
                         return latest;
@@ -156,6 +182,16 @@ internal static class Program
                 && Is(s,rootInfo,620,290,255,255,0),true);
             Ui(()=>{modal!.Close();modal.Dispose();modal=null;});
             Check("modal-closed-root-enabled",1,s=>s.Scene.Nodes[0].Window.Enabled && Is(s,rootInfo,620,290,0,0,255));
+            for (int resize=0;resize<4;resize++)
+            {
+                var previousBinding = source.InputBindings.Current!.Geometry.Nodes[0].Window;
+                int targetWidth = resize % 2 == 0 ? 1040 : 960;
+                Ui(()=>{root.Size=new Size(targetWidth,600);root.Update();});
+                var actualRoot = WindowCatalog.Find(process.ProcessName).Single(w=>w.Handle==rootHandle && w.ProcessId==process.Id);
+                Check($"resize-{resize+1}-fresh-binding",1,s=>s.Scene.Nodes[0].Window.BindingGeneration>previousBinding.BindingGeneration
+                    && s.Scene.Bounds.Width==actualRoot.CaptureBounds.Width && Is(s,rootInfo,620,290,0,0,255)
+                    && !source.InputBindings.Verify(previousBinding));
+            }
             Resource("before-cycles");
             for(int i=0;i<cycles;i++)
             {
@@ -180,6 +216,7 @@ internal static class Program
             JsonSerializer.Serialize(report,new { status=failure is null?"PASS":"FAIL",scope="SC02 synthetic real Windows/WGC/GPU fixture; explicit CPU pixel readback; not browser/input/NX/TIA acceptance",
                 at=DateTimeOffset.Now,buildIdentity=identity,rootInfo,cycles,checks,resources,scenes=source?.SceneHistory,
                 resourceStatus="OBSERVED_NOT_ENDURANCE", occlusionSetup, error=failure?.ToString(),captured=source?.CapturedFrames,
+                captureGeometryRetries=source?.CaptureGeometryRetries,
                 activeCapturesAfterDispose=source?.ActiveCaptureCount },new JsonSerializerOptions(JsonSerializerDefaults.Web){WriteIndented=true});
         Console.WriteLine($"Evidence: {output}");
         return failure is null?0:1;

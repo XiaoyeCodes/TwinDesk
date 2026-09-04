@@ -18,7 +18,10 @@ try {
         Get-FileHash -Algorithm SHA256 | Select-Object Path,Hash)
     [ordered]@{time=(Get-Date).ToString('o');scope='Synthetic real Windows/WGC/GPU fixture only; no browser or injected input';sources=$sceneSources} |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $sceneRunDirectory 'source-identity.json') -Encoding utf8
-    if ($sceneExitCode -ne 0 -or $sceneReport.status -ne 'PASS' -or $sceneReport.checks.Count -ne (7 + 2*$Cycles) -or $sceneReport.activeCapturesAfterDispose -ne 0) {
+    $resizeChecks=@($sceneReport.checks | Where-Object name -Match '^resize-[1-4]-fresh-binding$')
+    if ($sceneExitCode -ne 0 -or $sceneReport.status -ne 'PASS' -or $sceneReport.checks.Count -ne (11 + 2*$Cycles) -or
+        @($sceneReport.checks | Where-Object status -ne 'PASS').Count -ne 0 -or $resizeChecks.Count -ne 4 -or
+        $sceneReport.activeCapturesAfterDispose -ne 0) {
         throw "Fixture did not pass; preserve evidence at $sceneRunDirectory"
     }
     Write-Host "SC02 fixture: $($sceneReport.checks.Count) checks; resource samples are observations, not an endurance PASS."

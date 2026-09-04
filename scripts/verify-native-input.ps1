@@ -18,7 +18,7 @@ try {
         Get-FileHash -Algorithm SHA256 | Select-Object Path,Hash)
     [ordered]@{time=(Get-Date).ToString('o');scope='Native self-window input integration; no browser/NX/TIA';sources=$nativeSources} |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $nativeInputDirectory 'source-identity.json') -Encoding utf8
-    if ($nativeExitCode -ne 0 -or $nativeReport.status -ne 'PASS' -or $nativeReport.checks.Count -ne 19 -or $nativeReport.pendingUnicode -ne $false -or $nativeReport.session.heldCount -ne 0) {
+    if ($nativeExitCode -ne 0 -or $nativeReport.status -ne 'PASS' -or $nativeReport.checks.Count -ne 20 -or $nativeReport.pendingUnicode -ne $false -or $nativeReport.session.heldCount -ne 0) {
         throw "Native input test not passed; preserve $nativeInputDirectory"
     }
     Write-Host "Native input evidence: $nativeInputDirectory"

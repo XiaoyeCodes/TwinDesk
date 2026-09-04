@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Vortice.MediaFoundation;
 using Workbench.Windows;
 
 namespace Workbench.DesktopFixture;
@@ -39,10 +40,14 @@ internal static class NativeInputVerification
     }
     private static async Task<int> Verify(TestForm form,string output,CancellationToken cancellation)
     {
-        var checks=new List<object>();InputSession? session=null;NativeInputBackend? backend=null;
+        var checks=new List<object>();ExecutorDriver? session=null;NativeInputBackend? backend=null;
         WindowInfo? root=null;OwnedWindowScene? scene=null;Exception? failure=null;
         using var heartbeatStop=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         Task? watchdog=null;int keepAlive=1;long sequence=0;int lastPacketUps=0;
+        Task? captureTask=null;
+        using var captureStop=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var firstCapture=new TaskCompletionSource<WgcOwnedNv12Source>(TaskCreationOptions.RunContinuationsAsynchronously);
+        WgcOwnedNv12Source? capture=null;
         var lease=new InputLease(Guid.NewGuid(),1);var stamp=new InputStamp(Guid.NewGuid(),1,1,1);
         async Task Ui(Action action)
         {
@@ -71,8 +76,8 @@ internal static class NativeInputVerification
         }
         void ReadySession(INativeInputTransport transport)
         {
-            var environment=new WindowsInputEnvironment(root!,w=>w.Handle==root!.Handle && w.BindingGeneration==1
-                && form.LiveHandle==root.Handle); // Test owns this handle lifetime; never accepts an external window.
+            session?.Stop();
+            var environment=new WindowsInputEnvironment(root!,capture!.InputBindings.Verify);
             backend=new(environment,transport);lease=new(Guid.NewGuid(),1);sequence=0;
             session=new(lease,root!,backend);session.UpdateScene(stamp,scene!);
             // Explicit synthetic display gate for L1 native-only testing, not a browser display ACK.
@@ -94,13 +99,31 @@ internal static class NativeInputVerification
             await Task.Delay(150,cancellation);
             using var process=Process.GetCurrentProcess();
             root=WindowCatalog.Find(process.ProcessName).Single(w=>w.ProcessId==process.Id && w.Handle==form.LiveHandle) with {BindingGeneration=1};
-            scene=OwnedWindowScene.Arrange([root]);ReadySession(new WindowsInputTransport());
+            captureTask=Task.Run(()=>
+            {
+                MediaFactory.MFStartup(false).CheckError();
+                try
+                {
+                    using var source=new WgcOwnedNv12Source(root,1280,720);
+                    while(!captureStop.IsCancellationRequested)
+                    {
+                        using var sample=source.TryGetSample();
+                        if(sample is not null)firstCapture.TrySetResult(source);
+                        captureStop.Token.WaitHandle.WaitOne(20);
+                    }
+                }
+                catch(Exception e){firstCapture.TrySetException(e);session?.Invalidate("CAPTURE_FAILED");throw;}
+                finally {MediaFactory.MFShutdown();}
+            },captureStop.Token);
+            capture=await firstCapture.Task.WaitAsync(TimeSpan.FromSeconds(5),cancellation);
+            var captured=capture.InputBindings.Current??throw new InvalidOperationException("Complete capture binding required.");
+            scene=captured.Geometry;stamp=stamp with {Scene=captured.Version};ReadySession(new WindowsInputTransport());
             watchdog=Task.Run(async()=>
             {
                 while(!heartbeatStop.IsCancellationRequested)
                 {
                     if(Volatile.Read(ref keepAlive)!=0)session?.Heartbeat(lease);
-                    session?.Tick();await Task.Delay(100,heartbeatStop.Token);
+                    await Task.Delay(100,heartbeatStop.Token); // Executor's independent thread owns the watchdog tick.
                 }
             },heartbeatStop.Token);
             foreach(var button in new[]{InputButton.Left,InputButton.Right,InputButton.Middle})
@@ -144,6 +167,13 @@ internal static class NativeInputVerification
             if(partial.Accepted)throw new InvalidOperationException("Partial Unicode send incorrectly reported complete.");
             await Wait("partial-unicode-up-and-no-replay",()=>form.Entry.Text=="中"&&form.Entry.PacketUps>lastPacketUps
                 &&!backend!.HasPendingTransient&&!session.Status.Active);
+            // A custom Control can preprocess WM_KEYUP differently from TextBox. Inspect real raw messages,
+            // independently of managed OnKeyUp and of SendInput's successful return count.
+            ReadySession(new WindowsInputTransport());
+            await Ui(()=>form.Pad.Focus());
+            Send(InputKind.Text,text:"中A");
+            await Wait("custom-pad-unicode-raw-pairs-and-released-state",()=>form.Pad.PacketDowns==2&&form.Pad.PacketUps==2
+                &&(GetAsyncKeyState(0xe7)&0x8000)==0);
             // A same-process unrelated top-level window must not inherit the root's input permission.
             ReadySession(new WindowsInputTransport());
             await Ui(()=>form.ShowUnrelated());await Task.Delay(100,cancellation);
@@ -156,16 +186,34 @@ internal static class NativeInputVerification
         {
             heartbeatStop.Cancel();if(watchdog is not null)try{await watchdog;}catch(OperationCanceledException){}
             session?.Invalidate("TEST_FINISHED");
-            if(session is not null&&!session.RetrySafetyRelease())failure??=new InvalidOperationException("Native safety releases not confirmed.");
+            if(session is not null)try{session.Stop();}catch(Exception e){failure??=e;}
+            captureStop.Cancel();if(captureTask is not null)try{await captureTask.WaitAsync(TimeSpan.FromSeconds(3));}catch(Exception e){failure??=e;}
             try {await Ui(()=>form.CloseUnrelated());}catch(Exception e){failure??=e;}
         }
         var identity=new[]{typeof(NativeInputVerification).Assembly.Location,typeof(NativeInputBackend).Assembly.Location}.Select(path=>new
             {file=Path.GetFileName(path),sha256=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))}).ToArray();
         using var report=new FileStream(Path.Combine(output,"report.json"),FileMode.CreateNew);
-        JsonSerializer.Serialize(report,new {status=failure is null?"PASS":"FAIL",at=DateTimeOffset.Now,scope="L1 real SendInput into this process's own synthetic window; no browser, NX/TIA or true network-fault acceptance",
-            buildIdentity=identity,root,checks,session=session?.Status,nativeCode=backend?.LastCode,pendingUnicode=backend?.HasPendingTransient,error=failure?.ToString()},
+        JsonSerializer.Serialize(report,new {status=failure is null?"PASS":"FAIL",at=DateTimeOffset.Now,scope="L1 bounded executor + live WGC lifecycle binding + real SendInput into this process's own synthetic window; synthetic display gate, no browser, NX/TIA or true network-fault acceptance",
+            buildIdentity=identity,root,checks,session=session?.Status,nativeCode=backend?.LastCode,pendingUnicode=backend?.HasPendingTransient,
+            padPacket=new {form.Pad.PacketDowns,form.Pad.PacketUps,managedKeys=form.Pad.Keys.Select(k=>k.ToString()).ToArray(),asyncDown=(GetAsyncKeyState(0xe7)&0x8000)!=0},error=failure?.ToString()},
             new JsonSerializerOptions(JsonSerializerDefaults.Web){WriteIndented=true});
         Console.WriteLine("Evidence: "+output);return failure is null?0:1;
+    }
+    private sealed class ExecutorDriver(InputLease lease,WindowInfo root,NativeInputBackend backend)
+    {
+        private readonly BoundedInputExecutor executor=new(lease,root,backend);
+        public InputSessionStatus Status=>executor.Status.Session;
+        public InputOutcome Dispatch(InputCommand command)=>executor.Submit(command).GetAwaiter().GetResult();
+        public bool UpdateScene(InputStamp stamp,OwnedWindowScene scene)=>executor.UpdateScene(stamp,scene).GetAwaiter().GetResult();
+        public bool FrameSent(InputStamp stamp,uint sequence)=>executor.FrameSent(stamp,sequence).GetAwaiter().GetResult();
+        public bool Displayed(InputLease owner,InputStamp stamp,uint sequence)=>executor.Displayed(owner,stamp,sequence).GetAwaiter().GetResult();
+        public bool Heartbeat(InputLease owner)=>executor.Heartbeat(owner).GetAwaiter().GetResult();
+        public void Invalidate(string code)=>executor.Invalidate(code);
+        public void Stop()
+        {
+            var stopped=executor.StopAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+            if(!stopped.Completed||!stopped.Released)throw new InvalidOperationException("Executor has not stopped safely; no replacement allowed.");
+        }
     }
     private sealed class PartialOnceTransport : INativeInputTransport
     {
@@ -201,6 +249,7 @@ internal static class NativeInputVerification
     }
     private sealed class ObservedPad : Control
     {
+        internal int PacketDowns,PacketUps;
         internal readonly HashSet<MouseButtons> Downs=[],Ups=[],Buttons=[];
         internal readonly HashSet<Keys> Keys=[];internal int Wheel,HorizontalWheel,DoubleClicks;internal bool ExtendedControl,DraggedWithShift;internal bool? ExtendedEnter;internal Point LastPoint;
         public ObservedPad(){BackColor=Color.DarkSlateBlue;ForeColor=Color.White;SetStyle(ControlStyles.StandardClick|ControlStyles.StandardDoubleClick,true);}
@@ -214,6 +263,7 @@ internal static class NativeInputVerification
         protected override void OnMouseDoubleClick(MouseEventArgs e){base.OnMouseDoubleClick(e);DoubleClicks++;}
         protected override void WndProc(ref Message m)
         {
+            if(m.WParam==0xe7){if(m.Msg==0x100)PacketDowns++;if(m.Msg==0x101)PacketUps++;}
             if(m.Msg==0x100&&m.WParam==0x11)ExtendedControl=(((long)m.LParam>>24)&1)!=0;
             if(m.Msg==0x100&&m.WParam==0x0d)ExtendedEnter=(((long)m.LParam>>24)&1)!=0;
             if(m.Msg==0x20e)HorizontalWheel+=unchecked((short)((long)m.WParam>>16));

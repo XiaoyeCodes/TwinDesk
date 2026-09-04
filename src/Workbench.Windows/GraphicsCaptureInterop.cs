@@ -20,6 +20,40 @@ internal static class GraphicsCaptureInterop
     [DllImport("combase.dll")] private static extern int RoGetActivationFactory(nint classId, in Guid iid, out nint factory);
     [DllImport("d3d11.dll")] private static extern int CreateDirect3D11DeviceFromDXGIDevice(nint device, out nint inspectable);
 
+    // Diagnostic A/B factory lifetime. Explicitly thread-confined; never a global COM cache.
+    internal sealed class ItemFactory : IDisposable
+    {
+        private nint factory;
+        private readonly int threadId=Environment.CurrentManagedThreadId;
+        public ItemFactory()
+        {
+            const string className="Windows.Graphics.Capture.GraphicsCaptureItem";
+            Marshal.ThrowExceptionForHR(WindowsCreateString(className,(uint)className.Length,out var name));
+            try {var iid=typeof(IGraphicsCaptureItemInterop).GUID;Marshal.ThrowExceptionForHR(RoGetActivationFactory(name,iid,out factory));}
+            finally {WindowsDeleteString(name);}
+        }
+        public unsafe nint CreateNativeItem(nint window)
+        {
+            if(Environment.CurrentManagedThreadId!=threadId)throw new InvalidOperationException("Diagnostic factory is thread-confined.");
+            ObjectDisposedException.ThrowIf(factory==0,this);
+            var iid=new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760");nint item=0;
+            var create=(delegate* unmanaged[Stdcall]<nint,nint,Guid*,nint*,int>)(*(nint**)factory)[3];
+            Marshal.ThrowExceptionForHR(create(factory,window,&iid,&item));
+            return item; // Owning reference, diagnostic caller must release exactly once.
+        }
+        public GraphicsCaptureItem ForWindow(nint window)
+        {
+            var item=CreateNativeItem(window);
+            try {return MarshalInterface<GraphicsCaptureItem>.FromAbi(item);}
+            finally {Marshal.Release(item);}
+        }
+        public void Dispose()
+        {
+            if(Environment.CurrentManagedThreadId!=threadId)throw new InvalidOperationException("Dispose factory on its owning thread.");
+            if(factory!=0){Marshal.Release(factory);factory=0;}
+        }
+    }
+
     public static GraphicsCaptureItem ForWindow(nint hwnd)
     {
         const string className = "Windows.Graphics.Capture.GraphicsCaptureItem";

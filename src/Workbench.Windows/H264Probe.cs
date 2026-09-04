@@ -24,13 +24,15 @@ public static class H264Probe
     // Run on one worker thread: native event handling and callbacks never concurrently access the MFT.
     public static H264ProbeResult Run(int frameCount, bool hardware, Action<EncodedAccessUnit> onFrame,
         CancellationToken cancellationToken, int width = 1280, int height = 720, int fps = 30,
-        Func<IProbeFrameSource>? sourceFactory = null)
+        Func<IProbeFrameSource>? sourceFactory = null,bool continuous=false)
     {
         ArgumentNullException.ThrowIfNull(onFrame);
+        if(continuous && (sourceFactory is null || !cancellationToken.CanBeCanceled))throw new ArgumentException("Continuous mode requires a cancellable real source.");
         if (frameCount is < 1 or > 18000 || width is < 128 or > 2560 || height is < 128 or > 1440
             || (width & 1) != 0 || (height & 1) != 0 || fps is < 1 or > 60)
             throw new ArgumentOutOfRangeException(nameof(frameCount), "Invalid bounded probe settings.");
         cancellationToken.ThrowIfCancellationRequested();
+        int frameLimit=continuous?int.MaxValue:frameCount;
         MediaFactory.MFStartup().CheckError();
         try
         {
@@ -80,7 +82,7 @@ public static class H264Probe
                 while (!drained)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (frameSource is not null && !draining && watch.Elapsed.TotalSeconds >= (double)frameCount / fps)
+                    if (!continuous && frameSource is not null && !draining && watch.Elapsed.TotalSeconds >= (double)frameCount / fps)
                     {
                         if (sent == 0) throw new TimeoutException("WGC produced no sample during the requested observation interval.");
                         BeginDrain();
@@ -115,7 +117,7 @@ public static class H264Probe
                         if (draining) drained = true;
                     }
                     if (drained) break;
-                    if (!draining && sent < frameCount && (!isAsync || credits > 0)
+                    if (!draining && sent < frameLimit && (!isAsync || credits > 0)
                         && (frameSource is null || sent - received < 8)
                         && watch.Elapsed.TotalSeconds >= (frameSource is null ? (double)sent / fps : nextSourcePoll))
                     {
@@ -127,7 +129,7 @@ public static class H264Probe
                         sent++;
                         if (isAsync) credits--;
                         lastProgress = watch.Elapsed;
-                        if (sent == frameCount)
+                        if (sent == frameLimit)
                         {
                             BeginDrain();
                         }

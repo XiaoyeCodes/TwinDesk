@@ -7,6 +7,7 @@ namespace Workbench.Windows;
 public interface IInputBackend
 {
     bool HasPendingTransient => false;
+    string? ReadinessCode => null;
     bool IsTargetReady(OwnedWindowScene scene, ScreenPoint? point);
     // Native implementation must additionally account for partial Unicode/text batches and their transient key-ups.
     // This core only tracks persistent physical keys/buttons; a backend without text safety must reject Text.
@@ -37,7 +38,7 @@ public sealed class InputSession
     private InputStamp stamp;
     private uint lastSent,lastDisplayed;
     private long lastSequence,lastHeartbeat;
-    private bool active=true,ready;
+    private bool active=true,ready,sceneAvailable;
     private string reason="STREAM_NOT_READY";
 
     public InputSession(InputLease lease,WindowInfo root,IInputBackend backend,TimeProvider? time=null)
@@ -73,7 +74,7 @@ public sealed class InputSession
             ready=false;reason="STREAM_NOT_READY";
             if(!Release(held.ToArray())) { RevokeCore("INPUT_RELEASE_FAILED");return false; }
             bool newEpoch=scene is null || next.Epoch!=stamp.Epoch;
-            scene=copy;stamp=next;pending.Clear();lastDisplayed=0;
+            scene=copy;stamp=next;sceneAvailable=true;pending.Clear();lastDisplayed=0;
             if(newEpoch)lastSent=0;
             return true;
         }
@@ -83,7 +84,7 @@ public sealed class InputSession
     {
         lock(sync)
         {
-            Expire();if(!active || scene is null || value!=stamp)return false;
+            Expire();if(!active || !sceneAvailable || scene is null || value!=stamp)return false;
             if(frame==0 || frame<=lastSent || pending.Count>=256) { RevokeCore("MEDIA_BACKPRESSURE");return false; }
             lastSent=frame;pending.Enqueue((frame,time.GetTimestamp()));return true;
         }
@@ -93,7 +94,7 @@ public sealed class InputSession
     {
         lock(sync)
         {
-            Expire();if(!active || owner!=lease || scene is null || value!=stamp || frame<=lastDisplayed
+            Expire();if(!active || !sceneAvailable || owner!=lease || scene is null || value!=stamp || frame<=lastDisplayed
                 || !pending.Any(item=>item.Seq==frame))return false;
             lastDisplayed=frame;
             while(pending.TryPeek(out var item) && item.Seq<=frame)pending.Dequeue();
@@ -132,16 +133,61 @@ public sealed class InputSession
             ScreenPoint? point=command.U is { } u ? SceneInputCoordinates.ToScreen(scene,u,command.V!.Value) : null;
             try
             {
-                if(!backend.IsTargetReady(scene,point)){RevokeCore("FOCUS_OR_DESKTOP_DENIED");return Reject(reason);}
+                if(!backend.IsTargetReady(scene,point))
+                {
+                    // A fresh native snapshot can precede the capture scene transaction.
+                    // Release and wait for a NEW scene/frame ACK; never dispatch/replay against old geometry.
+                    if(backend.ReadinessCode=="SCENE_CHANGED")
+                    { PauseScene();return Reject(reason); }
+                    // Hovering a transparent border/non-target pixel is not a native action.
+                    // Keep the lease only for an unheld Move; every later event is checked afresh.
+                    if(command.Kind==InputKind.Move && held.Count==0 && backend.ReadinessCode=="POINTER_TARGET_DENIED")
+                        return Reject("POINTER_OUTSIDE_TARGET");
+                    RevokeCore("FOCUS_OR_DESKTOP_DENIED");return Reject(reason);
+                }
                 if(down is { } key)held.Add(key); // Before native call: a short/throwing send may already have pressed it.
-                if(!backend.TrySend(command,point)){RevokeCore("INPUT_SEND_FAILED");return Reject(reason);}
+                if(!backend.TrySend(command,point))
+                {
+                    if(backend.ReadinessCode=="SCENE_CHANGED")
+                    { PauseScene();return Reject(reason); }
+                    RevokeCore("INPUT_SEND_FAILED");return Reject(reason);
+                }
                 return new(true,"SUBMITTED_NOT_APPLICATION_ACK");
             }
             catch(Exception) { RevokeCore("INPUT_BACKEND_FAILED");return Reject(reason); }
         }
     }
 
-    public void Tick() { lock(sync)Expire(); }
+    public void Tick()
+    {
+        lock(sync)
+        {
+            Expire();
+            // A user can switch native focus while a browser key/button remains down, without
+            // sending another input message. Heartbeats alone must not keep that gesture alive.
+            // Run on the existing sole executor; this check never activates or changes a target.
+            if(!active || held.Count==0 || scene is null)return;
+            try
+            {
+                if(!backend.IsTargetReady(scene,null))
+                {
+                    if(backend.ReadinessCode=="SCENE_CHANGED")PauseScene();
+                    else RevokeCore("HELD_INPUT_TARGET_LOST");
+                }
+            }
+            catch(Exception) { RevokeCore("INPUT_BACKEND_FAILED"); }
+        }
+    }
+    public bool PauseScene()
+    {
+        lock(sync)
+        {
+            Expire();if(!active)return false;
+            sceneAvailable=false;ready=false;reason="SCENE_UPDATING";pending.Clear();lastDisplayed=0;
+            if(Release(held.ToArray()))return true;
+            RevokeCore("INPUT_RELEASE_FAILED");return false;
+        }
+    }
     public void Invalidate(string code="MEDIA_UNAVAILABLE") { lock(sync)RevokeCore(code); }
     public bool RetrySafetyRelease() { lock(sync){if(active)throw new InvalidOperationException("Revoke before safety retry.");return Release(held.ToArray());} }
     private void Expire()

@@ -20,6 +20,7 @@ public class InputSessionTests
     private sealed class Backend : IInputBackend
     {
         public bool Focus=true,Send=true,Release=true,ThrowSend,ThrowRelease;
+        public string? ReadinessCode {get;set;}
         public readonly List<InputCommand> Commands=[];
         public readonly List<HeldInput[]> Releases=[];
         public bool IsTargetReady(OwnedWindowScene scene,ScreenPoint? point)=>Focus;
@@ -139,6 +140,34 @@ public class InputSessionTests
         Assert.False(c.Session.FrameSent(c.Stamp,258));Assert.Equal("MEDIA_BACKPRESSURE",c.Session.Status.Reason);
         Assert.Equal(0,c.Session.Status.HeldCount);Assert.Equal(0,c.Session.Status.PendingFrames);
     }
+    [Fact] public void FocusLostWhileIdleReleasesHeldGestureEvenWithLiveHeartbeat()
+    {
+        var c=new Case();Assert.True(c.Session.Dispatch(c.Down()).Accepted);
+        c.Backend.Focus=false;Assert.True(c.Session.Heartbeat(c.Lease));c.Session.Tick();
+        Assert.Equal("HELD_INPUT_TARGET_LOST",c.Session.Status.Reason);
+        Assert.Equal(0,c.Session.Status.HeldCount);Assert.Single(c.Backend.Commands);
+        Assert.Single(c.Backend.Releases);Assert.False(c.Session.Status.Active);
+    }
+    [Fact] public void UnheldHoverOutsideTargetSendsNothingAndMayReturnWithoutReplay()
+    {
+        var c=new Case();c.Backend.Focus=false;c.Backend.ReadinessCode="POINTER_TARGET_DENIED";
+        var move=new InputCommand(c.Lease,1,c.Stamp,1,InputKind.Move,U:.5,V:.5);
+        Assert.Equal("POINTER_OUTSIDE_TARGET",c.Session.Dispatch(move).Code);
+        Assert.True(c.Session.Status.Active);Assert.Empty(c.Backend.Commands);
+        c.Backend.Focus=true;Assert.True(c.Session.Dispatch(move with {Sequence=2}).Accepted);
+        Assert.Single(c.Backend.Commands);
+    }
+    [Fact] public void HeldGestureCannotContinueAcrossNonTargetPixels()
+    {
+        var c=new Case();c.Session.Dispatch(c.Down());c.Backend.Focus=false;c.Backend.ReadinessCode="POINTER_TARGET_DENIED";
+        Assert.False(c.Session.Dispatch(new(c.Lease,2,c.Stamp,1,InputKind.Move,U:.5,V:.5)).Accepted);
+        Assert.False(c.Session.Status.Active);Assert.Equal(0,c.Session.Status.HeldCount);Assert.Single(c.Backend.Commands);
+    }
+    [Fact] public void IdleFocusChangeWithoutHeldInputDoesNotSeizeOrRevokeTarget()
+    {
+        var c=new Case();c.Backend.Focus=false;c.Session.Tick();
+        Assert.True(c.Session.Status.Active);Assert.Empty(c.Backend.Commands);Assert.Empty(c.Backend.Releases);
+    }
     [Fact] public void FocusFailureReleasesGestureWithoutSendingNewAction()
     {
         var c=new Case();c.Session.Dispatch(c.Down());c.Backend.Focus=false;
@@ -192,6 +221,57 @@ public class InputSessionTests
         var c=new Case();var old=c.Stamp;c.Stamp=c.Stamp with {Epoch=2};
         c.Session.UpdateScene(c.Stamp,Geometry());Assert.True(c.Session.FrameSent(c.Stamp,1));
         Assert.False(c.Session.Displayed(c.Lease,old,1));Assert.True(c.Session.Displayed(c.Lease,c.Stamp,1));
+    }
+    [Fact] public void CaptureFreezeReleasesAndCannotBeUnfrozenByOldFrameAck()
+    {
+        var c=new Case();c.Session.Dispatch(c.Down());
+        Assert.True(c.Session.PauseScene());Assert.Equal(0,c.Session.Status.HeldCount);Assert.True(c.Session.Status.Active);
+        Assert.False(c.Session.FrameSent(c.Stamp,2));Assert.False(c.Session.Displayed(c.Lease,c.Stamp,1));
+        Assert.False(c.Session.Dispatch(c.Down(2)).Accepted);
+        c.Stamp=c.Stamp with {Scene=2};Assert.True(c.Session.UpdateScene(c.Stamp,Geometry()));
+        Assert.True(c.Session.FrameSent(c.Stamp,2));Assert.True(c.Session.Displayed(c.Lease,c.Stamp,2));
+        Assert.True(c.Session.Dispatch(c.Down(3) with {DisplayedFrame=2}).Accepted);
+    }
+    [Fact] public void NativeSceneRacePausesWithoutDispatchAndRequiresNewSceneAcknowledgment()
+    {
+        var c=new Case();c.Backend.Focus=false;c.Backend.ReadinessCode="SCENE_CHANGED";
+        Assert.Equal("SCENE_UPDATING",c.Session.Dispatch(c.Down()).Code);
+        Assert.True(c.Session.Status.Active);Assert.False(c.Session.Status.Ready);Assert.Empty(c.Backend.Commands);
+        Assert.False(c.Session.FrameSent(c.Stamp,2));Assert.False(c.Session.Displayed(c.Lease,c.Stamp,1));
+        c.Backend.Focus=true;c.Backend.ReadinessCode=null;
+        Assert.Equal("STREAM_NOT_READY",c.Session.Dispatch(c.Down(2)).Code);
+        c.Stamp=c.Stamp with {Scene=2};Assert.True(c.Session.UpdateScene(c.Stamp,Geometry()));
+        Assert.True(c.Session.FrameSent(c.Stamp,3));Assert.True(c.Session.Displayed(c.Lease,c.Stamp,3));
+        Assert.True(c.Session.Dispatch(c.Down(3) with {DisplayedFrame=3}).Accepted);
+        Assert.Single(c.Backend.Commands); // Only a new user action, never the rejected old down.
+    }
+    [Fact] public void NativeSceneRaceDuringHeldGestureReleasesWithoutRevokingLease()
+    {
+        var c=new Case();Assert.True(c.Session.Dispatch(c.Down()).Accepted);
+        c.Backend.Focus=false;c.Backend.ReadinessCode="SCENE_CHANGED";c.Session.Tick();
+        Assert.True(c.Session.Status.Active);Assert.Equal("SCENE_UPDATING",c.Session.Status.Reason);
+        Assert.Equal(0,c.Session.Status.HeldCount);Assert.Single(c.Backend.Releases);
+        Assert.False(c.Session.Displayed(c.Lease,c.Stamp,1));
+    }
+    [Fact] public void SceneRaceAtSecondNativeCheckReleasesConservativeLedgerAndPauses()
+    {
+        var c=new Case();c.Backend.Send=false;c.Backend.ReadinessCode="SCENE_CHANGED";
+        Assert.Equal("SCENE_UPDATING",c.Session.Dispatch(c.Down()).Code);
+        Assert.True(c.Session.Status.Active);Assert.Equal(0,c.Session.Status.HeldCount);
+        Assert.Single(c.Backend.Releases);Assert.False(c.Session.Status.Ready);
+    }
+    [Fact] public void SceneRaceWithFailedReleaseStillRevokes()
+    {
+        var c=new Case();c.Session.Dispatch(c.Down());c.Backend.Release=false;
+        c.Backend.Focus=false;c.Backend.ReadinessCode="SCENE_CHANGED";c.Session.Tick();
+        Assert.False(c.Session.Status.Active);Assert.Equal("INPUT_RELEASE_FAILED",c.Session.Status.Reason);
+        Assert.Equal(1,c.Session.Status.HeldCount);
+    }
+    [Fact] public void RealMultiNodeCompositorSnapshotAcceptedByInputSceneTransaction()
+    {
+        var c=new Case();var geometry=OwnedWindowScene.Arrange([Root(),Root(2,1),Root(3,2)]);
+        Assert.True(c.Session.UpdateScene(c.Stamp with {Scene=2},geometry));
+        Assert.True(c.Session.Status.Active);Assert.False(c.Session.Status.Ready);
     }
     [Fact] public void OneThousandLogicalPairsLeaveNoLedgerEntries_NotNativeReliabilityProof()
     {

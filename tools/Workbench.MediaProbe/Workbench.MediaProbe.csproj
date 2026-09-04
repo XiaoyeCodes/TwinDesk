@@ -5,6 +5,13 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Workbench.Windows/Workbench.Windows.csproj" />
     <EmbeddedResource Include="probe.html" />
+    <EmbeddedResource Include="dual.html" />
     <EmbeddedResource Include="scene-timeline.js" />
+    <EmbeddedResource Include="frame-presenter.js" />
+    <EmbeddedResource Include="input-client.js" />
+    <EmbeddedResource Include="local-console.js" />
+    <EmbeddedResource Include="f0-pointer-calibration.js" />
+    <EmbeddedResource Include="jpeg-decoder.js" />
+    <EmbeddedResource Include="video-profile.js" />
   </ItemGroup>
 </Project>

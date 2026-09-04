@@ -1,95 +1,130 @@
 <!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>M1 H.264 实时链路探针</title>
-<style>body{font:16px system-ui;margin:24px;background:#12202c;color:#e8eef3}button,select{font:inherit;padding:8px;margin:4px}canvas{display:block;width:min(100%,1280px);height:auto;margin-top:16px;border:1px solid #789}pre{white-space:pre-wrap} .note{color:#ffc56d}</style>
+<style>body{font:16px system-ui;margin:24px;background:#12202c;color:#e8eef3}button,select{font:inherit;padding:8px;margin:4px}canvas{display:block;width:min(100%,1280px);height:auto;margin-top:16px;outline:1px solid #789}pre{white-space:pre-wrap}.note{color:#ffc56d}body.dual{font-size:12px;margin:12px}.dual h1{font-size:18px}.dual #sourceNote,.dual #inputPanel .note{display:none}.dual button,.dual select{padding:4px;margin:2px}.dual #inputStatus,.dual #status{min-height:2.5em}.dual textarea{width:100px;height:24px}.dual pre{font-size:10px}body.local-console #inputPanel,body.local-console #sourceNote,body.local-console #localPanel h2,body.local-console #delayFirst{display:none}.local-console h1{font-size:24px;margin:8px 0}.local-console #localPanel p{font-size:14px;margin:8px 0}.local-console #localPanel button{font-size:15px}body.local-console{margin:16px}</style>
 <h1>M1 硬编 → WebSocket → WebCodecs</h1>
-<p class="note" id="sourceNote">仅本机只读媒体探针，正在读取源类型；无远程输入，不代表 UG / 博图工作流验收通过。</p>
-<select id="duration" aria-label="测试时长"><option value="300">10 秒</option><option value="1800">60 秒</option><option value="18000">10 分钟</option></select>
-<button id="start">开始硬编测试</button><button id="stop" disabled>停止</button>
-<p id="status" role="status">尚未开始</p><canvas id="canvas" width="1280" height="720"></canvas><pre id="report"></pre>
-<script src="/scene-timeline.js"></script>
+<p class="note" id="sourceNote">仅本机媒体探针，正在读取源类型；不代表 UG / 博图工作流验收通过。</p>
+<select id="duration" aria-label="测试时长"><option value="300">10 秒</option><option value="1800">60 秒</option><option value="5400">3 分钟</option><option value="18000">10 分钟</option></select>
+<button id="start" disabled>开始硬编测试</button><button id="stop" disabled>停止</button>
+<label id="dualInputPanel" hidden><input id="dualInput" type="checkbox">本次启用该侧输入（先结束另一侧控制；本机激活目标）</label>
+<label><input id="delayFirst" type="checkbox">诊断：延迟首个解码回调 3 秒（不用于性能验收）</label>
+<div id="inputPanel" hidden><p class="note" id="inputNote"></p><label>探针拖动方式 <select id="pointerMode" aria-label="探针拖动方式"><option value="native">原鼠标按钮</option><option value="middle">左键映射中键（真实中键拖动诊断）</option></select></label><p class="note">映射只影响视频内左键，使用后切回原鼠标按钮。更改方式会释放持键；此模式不代替第二台客户端物理中键验收。</p><textarea id="inputText" aria-label="提交文本" maxlength="4096"></textarea><button id="sendText">向当前原生文本框发送一次</button><p id="inputStatus">等待控制通道</p></div>
+<button id="disconnectDiagnostic" hidden>仅 F0：按下 Shift 后断开控制，验证服务端释放</button>
+<label id="calibrationPanel" hidden><input id="calibratePointer" type="checkbox">F0 点击像素测量：只在蓝色网格单击不同位置，不拖动；报告使用实际解码橙点，不绘制替代标记</label>
+<section id="localPanel" hidden><h2>同机双屏键鼠体验 · 实验版</h2><p>浏览器与 NX 分别放在两个屏幕。点击“连接并接管 NX”后，等待橙色十字出现即可操作。F12 或“停止”退出；不设体验时长。橙色十字是请求位置，实际效果以 NX 画面为准。</p><button id="startLocal" hidden>接管本机键鼠</button><button id="stopLocal" hidden>退出本机接管</button><p id="localStatus" role="status">未接管；实体键鼠仍正常使用</p><p id="latencyStatus">操作后显示输入往返统计</p></section><p id="status" role="status">尚未开始</p><div style="position:relative;width:min(100%,1280px)"><canvas id="canvas" width="1280" height="720" tabindex="0" style="margin-top:0"></canvas><span id="localCursor" hidden style="position:absolute;pointer-events:none;color:#ff6b00;font:bold 28px monospace;transform:translate(-50%,-50%);text-shadow:0 0 2px white" aria-hidden="true">＋</span></div><pre id="report"></pre>
+<script src="/scene-timeline.js"></script><script src="/frame-presenter.js"></script><script src="/f0-pointer-calibration.js"></script><script src="/local-console.js"></script><script src="/input-client.js"></script><script src="/video-profile.js"></script><script src="/jpeg-decoder.js"></script>
 <script>
 'use strict';
-const status = document.querySelector('#status'), report = document.querySelector('#report');
-const start = document.querySelector('#start'), stop = document.querySelector('#stop');
-const canvas = document.querySelector('#canvas'), ctx = canvas.getContext('2d', {willReadFrequently:true});
-let active = null;
-fetch('/health/live').then(r=>{if(!r.ok)throw Error('source unavailable');return r.json();}).then(info=>{
+const status=document.querySelector('#status'),report=document.querySelector('#report');
+const start=document.querySelector('#start'),stop=document.querySelector('#stop');
+const canvas=document.querySelector('#canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false;
+const probePath=location.pathname.endsWith('/')?location.pathname:location.pathname+'/';
+fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable');return r.json();}).then(info=>{
+  dualMode=info.dual===true;expectedStream=info.streamId;localConsoleMode=info.localConsole===true;
+  document.querySelector("#localPanel").hidden=!localConsoleMode;document.body.classList.toggle("local-console",localConsoleMode);
+  if(localConsoleMode){document.querySelector("#duration").hidden=true;document.querySelector("#delayFirst").parentElement.hidden=true;}
+  document.body.classList.toggle('dual',dualMode);
+  if(!Number.isInteger(expectedStream)||expectedStream<1||expectedStream>2)throw Error('Invalid local stream identity');
+  document.querySelector('#dualInputPanel').hidden=!dualMode;
+  inputEnabled=info.inputEnabled;document.querySelector('#inputPanel').hidden=!inputEnabled;
+  inputTarget=info.inputTarget;
+  document.querySelector('#disconnectDiagnostic').hidden=!inputEnabled||inputTarget!=='F0';
+  document.querySelector('#calibrationPanel').hidden=!inputEnabled||inputTarget!=='F0';
+  document.querySelector('#inputNote').textContent=info.inputTarget==='NX'
+    ? `NX 工程副本输入实验：${info.partName}。需已在原生界面核对副本路径，并保持 NX 为本机前台。切换工程将拒绝输入。点击视频可输入；中文用下方提交。无异机或完整工作流验收。`
+    : 'F0 回环输入实验，仅控制显式选择的测试窗口。请先在本机激活 F0。点击视频后可输入；中文用下方提交，浏览器保留键不保证截获。';
+  selectedCodec=info.codec??'h264';start.textContent=selectedCodec==='jpeg'?'开始 JPEG 兼容测试':'开始硬编测试';
+  videoSize=probeVideoSize(info.profile?.width,info.profile?.height);
+  document.querySelector('h1').textContent=`M1 ${selectedCodec==='jpeg'?'JPEG 兼容':'H.264 硬编'} · ${videoSize.width}×${videoSize.height}`;
   document.querySelector('#sourceNote').textContent=info.source==='window'
-    ? (info.ownedScene ? '关联窗口 GPU 合成实验：同进程 owner 与透明混合；辅助进程识别尚未实现；无产品输入。' : '本机真实窗口 → WGC / GPU / 硬编。窗口由本地启动参数固定；本页不发送键鼠，静止窗口不强制重复帧。')
+    ? (info.ownedScene?'关联窗口 GPU 合成实验：同进程 owner 与透明混合；辅助进程识别尚未实现。':'本机真实窗口 → WGC / GPU / 硬编。窗口由本地启动参数固定；静止窗口不强制重复帧。')
     : '本机动态测试图，不采集桌面、不注入输入，不代表 UG / 博图验收通过。';
+  if(inputEnabled)document.querySelector('#sourceNote').textContent=`${inputTarget} 本机输入联调：独立控制通道 + WGC 合成 + H.264；不是完整工作流验收。`;
+  if(selectedCodec==='jpeg')document.querySelector('#sourceNote').textContent=`JPEG 兼容实验：WGC关联窗口合成、显式CPU读回、独立JPEG帧；${inputEnabled?inputTarget+'输入':'只读'}，不是H.264性能或真实工作流验收。`;
+  if(info.localConsole){document.querySelector("h1").textContent="本机 NX 键鼠体验（实验版）";document.title="本机 NX 浏览器控制 · 实验版";start.textContent="连接并接管 NX";} start.disabled=false;
 }).catch(()=>{start.disabled=true;status.textContent='源状态读取失败';});
-start.onclick = async () => {
-  if (active) return;
-  if (!isSecureContext || !globalThis.VideoDecoder) {status.textContent='当前浏览器不支持安全上下文中的 VideoDecoder';return;}
-  const run = {socket:null,decoder:null,received:0,decoded:0,presented:0,staleOutputs:0,sceneDisplays:[],checks:0,mismatches:0,firstOutputMs:null,maxQueue:0,pending:0,done:false,start:performance.now(),chain:Promise.resolve(),timeline:new ProbeSceneTimeline(1280,720)};
-  active=run; start.disabled=true;stop.disabled=false;report.textContent='';status.textContent='连接并协商真实编码器…';
-  const fail = error => {
-    if (run.done) return;
+start.onclick=async()=>{
+  if(active||!videoSize)return;
+  if(!isSecureContext||(selectedCodec==='h264'?!globalThis.VideoDecoder:!globalThis.createImageBitmap)){status.textContent='当前浏览器缺少安全上下文或所选解码能力；JPEG也不取消HTTPS要求';return;}
+  const run={width:videoSize.width,height:videoSize.height,socket:null,decoder:null,received:0,decoded:0,presented:0,staleOutputs:0,sceneDisplays:[],checks:0,mismatches:0,firstOutputMs:null,maxQueue:0,pending:0,done:false,start:performance.now(),chain:Promise.resolve(),timeline:new ProbeSceneTimeline(videoSize.width,videoSize.height)};
+  active=run;start.disabled=true;stop.disabled=false;report.textContent='';status.textContent='连接并协商真实编码器…';
+  const fail=error=>{
+    if(run.done)return;
     run.done=true;status.textContent='失败：'+String(error);report.textContent=JSON.stringify({status:'FAIL',error:String(error),received:run.received,decoded:run.decoded},null,2);cleanup();
   };
-  const cleanup = () => {
-    if(run.decoder && run.decoder.state!=='closed')run.decoder.close();
-    run.socket?.close();if(active===run)active=null;start.disabled=false;stop.disabled=true;
+  const cleanup=()=>{
+    run.input?.close();run.presenter?.close();
+    document.querySelector('#inputStatus').textContent=run.useInput?'本次控制已结束；新输入需要重新开始':'本次为只读视频';
+    if(run.decoder&&run.decoder.state!=='closed')run.decoder.close();
+    run.socket?.close();if(active===run){active=null;start.disabled=false;stop.disabled=true;}
   };
   run.cancel=()=>fail('用户停止；未记为通过');
-  const socket=run.socket=new WebSocket(`ws://${location.host}/ws?frames=${document.querySelector('#duration').value}`);socket.binaryType='arraybuffer';
+  run.useInput=inputEnabled&&(!dualMode||document.querySelector('#dualInput').checked);
+  if(run.useInput){try{run.input=await ProbeInputClient.open(canvas,fail);if(run.done){run.input.close();return;}}catch(error){fail(error);return;}}
+  const videoQuery=localConsoleMode?'live=1':`frames=${document.querySelector('#duration').value}${dualMode&&!run.useInput?'&observe=1':''}`;
+  const socket=run.socket=new WebSocket(`ws://${location.host}${probePath}ws?${videoQuery}`);socket.binaryType='arraybuffer';
   socket.onmessage=event=>{if(++run.pending>16){fail('Message processing backlog exceeded');return;}run.chain=run.chain.then(async()=>{
     if(run.done)return;
     if(typeof event.data==='string'){
       const message=JSON.parse(event.data);
       if(message.type==='probeError')throw Error(message.error);
       if(message.type==='streamConfig'){
-        if(run.decoder || !['pattern','window'].includes(message.source) || message.format!=='annexb' || message.width!==1280 || message.height!==720)throw Error('Unexpected stream configuration');
-        run.source=message.source;
-        run.identity=message.hostInstanceId;
-        run.timeline.announce(message.scene??{version:1,width:1280,height:720,nodeCount:1,contentRect:{x:0,y:0,width:1280,height:720}});
+        if(message.streamId!==expectedStream||message.epoch!==1||run.input&&(message.hostInstanceId!==run.input.identity.hostInstanceId||message.streamId!==run.input.identity.streamId))throw Error('Video/control target mismatch');
+        if(run.decoder||!['pattern','window'].includes(message.source)||message.codec!==selectedCodec||message.format!==(selectedCodec==='jpeg'?'jpeg':'annexb')||message.width!==run.width||message.height!==run.height)throw Error('Unexpected stream configuration');
+        canvas.width=run.width;canvas.height=run.height;run.codec=message.codec;run.source=message.source;run.identity=message.hostInstanceId;
+        run.timeline.announce(message.scene??{version:1,width:run.width,height:run.height,nodeCount:1,contentRect:{x:0,y:0,width:run.width,height:run.height}});
         if(message.sceneVersion!==run.timeline.version)throw Error('Initial scene mismatch');
-        const config={codec:message.codecString,codedWidth:1280,codedHeight:720,optimizeForLatency:true};
-        const support=await VideoDecoder.isConfigSupported(config);if(!support.supported)throw Error('H264 configuration unsupported');
-        run.decoder=new VideoDecoder({error:fail,output:frame=>{
-          try{
-            if(run.done)return;
-            const metadata=run.timeline.complete(frame.timestamp);run.decoded++;
-            if(!metadata.present){run.staleOutputs++;return;}
-            ctx.drawImage(frame,0,0);run.presented++;
-            if(run.sceneDisplays.at(-1)?.version!==metadata.scene.version){
-              if(run.sceneDisplays.length>=256)throw Error('Scene evidence budget exceeded');
-              run.sceneDisplays.push({version:metadata.scene.version,nodeCount:metadata.scene.nodeCount,sequence:metadata.sequence});
-            }
-            run.colorSpace??=frame.colorSpace.toJSON();
-            if(run.firstOutputMs===null)run.firstOutputMs=performance.now()-run.start;
-            if(run.source==='pattern' && (run.decoded%30===0 || run.decoded===1)){
-              const frameIndex=Math.round(frame.timestamp*30/1000000), expected=frameIndex*9%(1280-64);
-              const pixels=ctx.getImageData(0,96,1280,1).data;let left=-1;
-              for(let x=0;x<1280;x++){if(pixels[x*4]>220){left=x;break;}}
-              run.checks++;if(left<0 || Math.abs(left-expected)>5)run.mismatches++;
-            }
-            status.textContent=run.source==='window' ? `真实窗口已解码 ${run.decoded} 帧；场景 ${metadata.scene.version} / ${metadata.scene.nodeCount} 个节点（无产品输入）` : `实时解码 ${run.decoded} 帧；动态像素检查 ${run.checks}，错误 ${run.mismatches}`;
-          }catch(e){fail(e);}finally{frame.close();}
-        }});run.decoder.configure(config);return;
+        const config={codec:message.codecString,codedWidth:run.width,codedHeight:run.height,optimizeForLatency:true};
+        if(run.codec==='h264'){const support=await VideoDecoder.isConfigSupported(config);if(run.done)return;if(!support.supported)throw Error('H264 configuration unsupported; select explicit JPEG compatibility at local startup');}
+        run.presenter=new ProbeFramePresenter({timeline:run.timeline,error:fail,delayFirstMs:document.querySelector('#delayFirst').checked?3000:0,present:(frame,metadata)=>{
+          if(run.done)return;
+          if(!frame.image&&(frame.displayWidth!==run.width||frame.displayHeight!==run.height))throw Error('Decoded dimensions do not match stream');
+          ctx.drawImage(frame.image??frame,0,0);run.presented++;run.input?.displayed(metadata.scene,metadata.sequence);
+          if(run.sceneDisplays.at(-1)?.version!==metadata.scene.version){
+            if(run.sceneDisplays.length>=256){if(localConsoleMode){run.sceneDisplays.shift();run.sceneDisplaysDropped=(run.sceneDisplaysDropped??0)+1;}else throw Error('Scene evidence budget exceeded');}
+            run.sceneDisplays.push({version:metadata.scene.version,nodeCount:metadata.scene.nodeCount,sequence:metadata.sequence});
+          }
+          run.colorSpace??=frame.colorSpace?.toJSON()??null;
+          if(run.firstOutputMs===null)run.firstOutputMs=performance.now()-run.start;
+          if(run.source==='pattern'&&(run.decoded%30===0||run.decoded===1)){
+            const frameIndex=Math.round(frame.timestamp*30/1000000),expected=frameIndex*9%(run.width-64);
+            const pixels=ctx.getImageData(0,96,run.width,1).data;let left=-1;
+            for(let x=0;x<run.width;x++){if(pixels[x*4]>220){left=x;break;}}
+            run.checks++;if(left<0||Math.abs(left-expected)>5)run.mismatches++;
+          }
+          status.textContent=run.source==='window'?`真实窗口已解码 ${run.decoded} 帧；场景 ${metadata.scene.version} / ${metadata.scene.nodeCount} 个节点（${run.input?inputTarget+' 输入实验':'只读'}）`:`实时解码 ${run.decoded} 帧；动态像素检查 ${run.checks}，错误 ${run.mismatches}`;
+        }});
+        const handlers={error:fail,output:frame=>{try{if(!run.done)run.decoded++;run.presenter.accept(frame);}catch(error){frame.close();fail(error);}}};
+        run.decoder=run.codec==='jpeg'?new ProbeJpegDecoder({...handlers,width:run.width,height:run.height}):new VideoDecoder(handlers);
+        if(run.codec==='h264')run.decoder.configure(config);return;
       }
       if(message.type==='sceneConfig'){
-        if(!run.decoder || message.hostInstanceId!==run.identity || message.streamId!==1 || message.epoch!==1)throw Error('Unexpected scene identity');
+        run.input?.freeze();
+        if(!run.decoder||message.hostInstanceId!==run.identity||message.streamId!==expectedStream||message.epoch!==1)throw Error('Unexpected scene identity');
         run.timeline.announce(message.scene);return;
       }
       if(message.type==='probeEnd'){
-        if(!run.decoder)throw Error('Missing decoder');await run.decoder.flush();if(run.done)return;
-        const passed=run.received>0 && run.received===message.result.outputFrames && run.decoded===run.received && run.timeline.pending.size===0 && run.presented>0 && (run.source==='window' || (run.mismatches===0 && run.checks>0));
-        const result={type:'browserResult',status:passed?'PASS':'FAIL',source:run.source,received:run.received,decoded:run.decoded,presented:run.presented,staleOutputs:run.staleOutputs,sceneDisplays:run.sceneDisplays,patternChecks:run.source==='pattern'?run.checks:null,patternMismatches:run.source==='pattern'?run.mismatches:null,decodedColorSpace:run.colorSpace,firstOutputMs:run.firstOutputMs,maxDecodeQueue:run.maxQueue,elapsedMs:performance.now()-run.start,userAgent:navigator.userAgent,encoder:message.result};
-        report.textContent=JSON.stringify(result,null,2);status.textContent=passed?(run.source==='window'?'PASS：只读真实窗口媒体链路完成；真实操作另行验收':'PASS：实际硬编 / WS / 解码 / 动态像素检查完成'):'FAIL：帧数或像素检查不匹配';
+        if(!run.decoder)throw Error('Missing decoder');run.presenter.releaseDue();await run.decoder.flush();await run.presenter.settled();if(run.done)return;
+        run.staleOutputs=run.presenter.stats.staleScenes+run.presenter.stats.staleSequences;
+        const passed=run.received>0&&run.received===message.result.outputFrames&&run.decoded===run.received&&run.timeline.pending.size===0&&run.presented>0&&run.presented+run.staleOutputs===run.decoded&&(run.source==='window'||(run.mismatches===0&&run.checks>0));
+        const result={type:'browserResult',status:passed?'PASS':'FAIL',streamId:expectedStream,width:run.width,height:run.height,codec:run.codec,source:run.source,received:run.received,decoded:run.decoded,presented:run.presented,staleOutputs:run.staleOutputs,sceneDisplays:run.sceneDisplays,patternChecks:run.source==='pattern'?run.checks:null,patternMismatches:run.source==='pattern'?run.mismatches:null,decodedColorSpace:run.colorSpace,firstOutputMs:run.firstOutputMs,maxDecodeQueue:run.maxQueue,elapsedMs:performance.now()-run.start,userAgent:navigator.userAgent,encoder:message.result};
+        result.input=run.input?.summary();result.presentation={delayFirstMs:run.presenter.delayFirstMs,...run.presenter.stats};
+        report.textContent=JSON.stringify(result,null,2);status.textContent=passed?(run.source==='window'?'PASS：真实窗口媒体链路完成；输入及真实工作流需单独核对':'PASS：实际硬编 / WS / 解码 / 动态像素检查完成'):'FAIL：帧数或像素检查不匹配';
         socket.send(JSON.stringify(result));run.done=true;cleanup();return;
       }
       throw Error('Unknown message');
     }
-    if(!run.decoder || run.decoder.state!=='configured')throw Error('Frame before configuration');
+    if(!run.decoder||run.decoder.state!=='configured')throw Error('Frame before configuration');
     const view=new DataView(event.data);if(view.byteLength<40)throw Error('Truncated header');
-    if(view.getUint32(0)!==0x55475742 || view.getUint8(4)!==1 || view.getUint8(5)!==1)throw Error('Protocol mismatch');
+    if(view.getUint32(0)!==0x55475742||view.getUint8(4)!==1||view.getUint8(5)!==(run.codec==='jpeg'?2:1))throw Error('Protocol mismatch');
     const flags=view.getUint16(6),seq=view.getUint32(20),timestamp=view.getBigUint64(24);
-    if(flags>1 || view.getUint32(8)!==1 || view.getUint32(12)!==run.timeline.version || view.getUint32(16)!==1 || seq!==run.received+1 || timestamp>BigInt(Number.MAX_SAFE_INTEGER) || view.getUint16(32)!==1280 || view.getUint16(34)!==720 || view.getUint32(36)!==view.byteLength-40 || view.byteLength>8*1024*1024+40)throw Error('Invalid frame envelope');
-    if(seq===1 && flags!==1)throw Error('Missing initial IDR');
+    if(flags>1||view.getUint32(8)!==expectedStream||view.getUint32(12)!==run.timeline.version||view.getUint32(16)!==1||seq!==run.received+1||timestamp>BigInt(Number.MAX_SAFE_INTEGER)||view.getUint16(32)!==run.width||view.getUint16(34)!==run.height||view.getUint32(36)!==view.byteLength-40||view.byteLength>8*1024*1024+40)throw Error('Invalid frame envelope');
+    if(seq===1&&flags!==1)throw Error('Missing initial IDR');
+    if(run.codec==='jpeg'&&flags!==1)throw Error('JPEG must be independently decodable');
     run.maxQueue=Math.max(run.maxQueue,run.decoder.decodeQueueSize);if(run.maxQueue>8)throw Error('Decoder backpressure; probe fails rather than dropping dependent frames');
-    run.timeline.submit(Number(timestamp),view.getUint32(12),seq);
-    run.received++;run.decoder.decode(new EncodedVideoChunk({type:flags?'key':'delta',timestamp:Number(timestamp),data:new Uint8Array(event.data,40)}));
+    run.timeline.submit(Number(timestamp),view.getUint32(12),seq);run.received++;
+    const chunk={type:flags?'key':'delta',timestamp:Number(timestamp),data:new Uint8Array(event.data,40)};
+    run.decoder.decode(run.codec==='jpeg'?chunk:new EncodedVideoChunk(chunk));
   }).catch(fail).finally(()=>{run.pending--;});};
   socket.onerror=()=>fail('WebSocket error');socket.onclose=()=>{run.chain=run.chain.then(()=>{if(!run.done)fail('Connection closed before complete report');});};
 };

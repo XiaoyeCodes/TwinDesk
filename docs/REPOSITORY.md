@@ -1,6 +1,8 @@
 # TwinDesk 仓库说明
 
-本项目用于单人通过浏览器远程操作 Windows 上的 Siemens NX / TIA Portal。当前为 M0/M1 技术验证阶段，不是可部署的完整远控产品。
+> **当前执行入口：** [本机任务计划 LOCAL-1](./LOCAL_IMPLEMENTATION_PLAN.md) 定义 LC-01～07、原 A/P 验收的本机映射和路线变更门槛；[开发交接](./DEVELOPMENT_HANDOFF.md) 定义换电脑恢复步骤。与旧文中异机/CF专属要求冲突时，以用户范围变更及 LOCAL-1 映射为准；其余安全、真实性和完成条件保留。
+
+本项目用于单人在同一台 Windows 电脑通过浏览器操作 Siemens NX / TIA Portal。当前为 M0/M1 技术验证阶段，不是可部署的完整远控产品。
 
 ## 文档入口
 
@@ -41,4 +43,10 @@ bootstrap 按锁定版本准备项目本地 .NET / Node 工具链；需要联网
 
 另有 `./scripts/verify-native-input.ps1`，需要显式点击测试窗 Start，会通过项目后端向自身测试窗口实际注入键鼠；运行期间请不要操作键鼠。它不是无人值守逻辑测试，也不验证 NX/TIA。
 
-具体外部条件和未完成项以 PROJECT_STATUS 为准。当前原生输入后端已有局部实现，下一步为有界执行器、真实捕获身份绑定、网页输入联调与 NX 编辑参数框；场景夹具已存在，不重建，资源长时证据仍缺。不能直接跳到正式 M2 服务开发。
+具体外部条件和下一项以 PROJECT_STATUS 最新入口为准。有界执行器、捕获绑定和同机实验入口已有实现；接下来按 LC-01～07 解决时延与可用性，保留 SC07/SC08 门槛，不能直接跳到正式 M2。
+
+## 锁定前端工具链
+
+运行 ./scripts/verify-web-dependencies.ps1，在新的临时验证目录执行npm ci、严格TSX类型检查、React中文服务端渲染及Vite生产构建，并检查锁文件不变。依赖定义和说明在src/web；这里只准备工具链，正式React控制台仍待M1门槛。
+
+NX输入的显式有限实验入口为 ./scripts/start-nx-input-probe.ps1 -VerifiedCopy <artifacts/verification中的已核对可写prt> -FullHd。先用原生NX确认打开的是完整副本路径；脚本不打开工程、不抢焦点。标题准入不能证明路径或限制原生另存为位置。普通媒体仍只读，两个输入入口都不得暴露LAN/公网。当前后端已有有界执行器与捕获绑定，下一步按状态表继续LC-01，以上早期“尚无输入”描述仅适用于只读入口。

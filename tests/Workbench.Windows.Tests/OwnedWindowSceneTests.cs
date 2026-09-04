@@ -91,6 +91,12 @@ public class OwnedWindowSceneTests
         var root=W(1);var a=W(2,1);var b=W(3,1);
         Assert.False(OwnedWindowScene.Arrange([root,a,b]).SameGeometry(OwnedWindowScene.Arrange([root,b,a])));
     }
+    [Fact] public void ArrangedSceneCanBeReselectedWithoutReversingNativeZOrder()
+    {
+        var root=W(1);var geometry=OwnedWindowScene.Arrange(OwnedWindowScene.Select(root,[W(3,2),root,W(2,1)]));
+        var again=OwnedWindowScene.Arrange(OwnedWindowScene.Select(root,geometry.Nodes.Select(node=>node.Window).ToArray()));
+        Assert.True(geometry.SameGeometry(again));Assert.Equal([2,1,0],geometry.Nodes.Select(node=>node.Window.ZOrder));
+    }
     [Fact]
     public void NodesCannotBeMutatedThroughInputArray()
     {

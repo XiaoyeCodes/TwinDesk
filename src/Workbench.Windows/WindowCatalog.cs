@@ -25,20 +25,24 @@ public static class WindowCatalog
         var result = new List<WindowInfo>();
         var normalized = Path.GetFileNameWithoutExtension(processName);
         int zOrder = 0;
-        NativeMethods.EnumWindows((hwnd, _) =>
+        // Fresh process snapshot per call. Filter HWND PIDs before inspecting process metadata,
+        // instead of opening every unrelated visible process twice for each pointer message.
+        var processes=Process.GetProcessesByName(normalized);
+        try
         {
-            int rank = zOrder++;
-            if (!NativeMethods.IsWindowVisible(hwnd)) return true;
-            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-            try
+            var byId=processes.ToDictionary(p=>p.Id);
+            NativeMethods.EnumWindows((hwnd, _) =>
             {
-                using var process = Process.GetProcessById((int)pid);
-                if (!process.ProcessName.Equals(normalized, StringComparison.OrdinalIgnoreCase)) return true;
-                result.Add(Describe(hwnd, process) with { ZOrder = rank });
-            }
-            catch (Exception ex) when (ex is ArgumentException or System.ComponentModel.Win32Exception or InvalidOperationException) { }
-            return true;
-        }, 0);
+                int rank = zOrder++;
+                if (!NativeMethods.IsWindowVisible(hwnd)) return true;
+                NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+                if(!byId.TryGetValue((int)pid,out var process))return true;
+                try {result.Add(Describe(hwnd, process) with { ZOrder = rank });}
+                catch (Exception ex) when (ex is ArgumentException or System.ComponentModel.Win32Exception or InvalidOperationException) { }
+                return true;
+            }, 0);
+        }
+        finally{foreach(var process in processes)process.Dispose();}
         return result;
     }
 

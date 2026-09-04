@@ -9,7 +9,8 @@ namespace Workbench.Windows;
 /// Read-only checks. Never activates a window or bypasses UIPI. A live binding verifier from the owning
 /// window/capture registry is mandatory; PID + HWND alone cannot prove absence of same-process HWND reuse.
 /// </summary>
-public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool> verifyLiveBinding) : INativeInputEnvironment
+public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool> verifyLiveBinding,
+    Func<WindowInfo,bool>? allowDiagnosticRoot=null) : INativeInputEnvironment
 {
     public NativeInputCheck Check(OwnedWindowScene scene,ScreenPoint? point)
     {
@@ -26,7 +27,11 @@ public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool
                 || !string.Equals(target.MainModule?.FileName,root.ExecutablePath,StringComparison.OrdinalIgnoreCase))return Deny("TARGET_IDENTITY_CHANGED");
             if(!InteractiveDesktop())return Deny("DESKTOP_UNAVAILABLE");
             if(Integrity(target.Handle)>Integrity(current.Handle))return Deny("INPUT_PERMISSION_MISMATCH");
-            var live=OwnedWindowScene.Select(root,WindowCatalog.Find(root.ProcessName));
+            var windows=WindowCatalog.Find(root.ProcessName);
+            var currentRoot=windows.SingleOrDefault(w=>OwnedWindowScene.SameIdentity(root,w));
+            if(allowDiagnosticRoot is not null && (currentRoot is null || !allowDiagnosticRoot(currentRoot)))
+                return Deny("DIAGNOSTIC_TARGET_CHANGED");
+            var live=OwnedWindowScene.Select(root,windows);
             if(live.Count!=scene.Nodes.Count)return Deny("SCENE_CHANGED");
             var matched=new List<WindowInfo>();
             foreach(var window in live)

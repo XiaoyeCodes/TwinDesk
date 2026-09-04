@@ -57,7 +57,9 @@ public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNo
         if (right > int.MaxValue || bottom > int.MaxValue) throw new InvalidDataException("Native coordinates overflow.");
         ValidateSize(right-left, bottom-top);
         var bounds = new WindowBounds((int)left, (int)top, (int)(right-left), (int)(bottom-top));
-        var nodes = backToFront.Select((w, index) => new SceneNode(w with { ZOrder = index },
+        // Keep the native convention: rank 0 is frontmost, although the node array is back-to-front.
+        // Otherwise Select(Arrange(...).Nodes) reverses every multi-window scene during input validation.
+        var nodes = backToFront.Select((w, index) => new SceneNode(w with { ZOrder = backToFront.Count - 1 - index },
             new(w.CaptureBounds.X-bounds.X, w.CaptureBounds.Y-bounds.Y, w.CaptureBounds.Width, w.CaptureBounds.Height))).ToArray();
         return new(bounds, Array.AsReadOnly(nodes));
     }
@@ -85,7 +87,12 @@ public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNo
 }
 
 // Only public, non-native geometry goes on the wire. Native nodes stay in local evidence reports.
-public sealed record ProbeSceneConfig(uint Version, int Width, int Height, WindowBounds ContentRect, int NodeCount);
+public sealed record ProbeSceneConfig(uint Version, int Width, int Height, WindowBounds ContentRect, int NodeCount)
+{
+    // Probe-only dimensions for decoded-pixel diagnostics; no desktop origin is exposed.
+    public int SourceWidth {get;init;}
+    public int SourceHeight {get;init;}
+}
 
 /// <summary>Associates asynchronous encoded output with the scene captured at input, not CurrentScene.</summary>
 public sealed class FrameSceneLedger(int capacity)

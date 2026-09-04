@@ -6,6 +6,19 @@ WindowCatalog.SetDpiAwareness();
 var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 try
 {
+    if(args.Length==3 && args[0]=="--benchmark-catalog" && args[1]=="--process")
+    {
+        var values=new List<double>();int count=0;
+        for(int i=0;i<210;i++)
+        {
+            var watch=System.Diagnostics.Stopwatch.StartNew();count=WindowCatalog.Find(args[2]).Count;
+            if(i>=10)values.Add(watch.Elapsed.TotalMilliseconds);
+        }
+        values.Sort();await PrintReportAsync(new {time=DateTimeOffset.Now,scope="Read-only catalog calls; NOT end-to-end input latency",iterations=200,count,
+            medianMs=values[100],p95Ms=values[189],maxMs=values[^1],meanMs=values.Average(),
+            binarySha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(typeof(WindowCatalog).Assembly.Location)))});
+        return 0;
+    }
     ValidateArguments();
     if (args.Contains("--help"))
     {

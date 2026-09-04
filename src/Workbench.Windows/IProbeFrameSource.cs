@@ -11,3 +11,8 @@ public interface IProbeFrameSource : IDisposable
     // Ownership of a returned sample transfers to caller; null means no new capture, not source failure.
     IMFSample? TryGetSample();
 }
+
+public interface IBgraProbeFrameSource : IDisposable
+{
+    BgraProbeFrame? TryGetBgraFrame();
+}

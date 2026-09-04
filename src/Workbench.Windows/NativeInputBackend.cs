@@ -10,6 +10,7 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
     private ScreenPoint? preparedPoint;
     private readonly HashSet<ushort> unicodePending=[];
     public string LastCode { get; private set; }="NOT_CHECKED";
+    public string? ReadinessCode=>LastCode;
     public bool HasPendingTransient=>unicodePending.Count!=0;
     public bool IsTargetReady(OwnedWindowScene scene,ScreenPoint? point)
     {

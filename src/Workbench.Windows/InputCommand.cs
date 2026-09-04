@@ -73,6 +73,8 @@ public static class PhysicalKeyMap
     {
         key=default; return code is {Length:>0 and <=32} && keys.TryGetValue(code,out key);
     }
+    public static string? FromScanCode(uint scan,bool extended) => scan>ushort.MaxValue?null:
+        keys.FirstOrDefault(pair=>pair.Value.ScanCode==scan && pair.Value.Extended==extended).Key;
     private static Dictionary<string,PhysicalKey> Build()
     {
         var result=new Dictionary<string,PhysicalKey>(StringComparer.Ordinal);

@@ -1,5 +1,7 @@
 # 环境基线、原文件指纹与资料依据
 
+> **范围变更（用户确认，2026-09-04）：本版仅要求同一台电脑通过浏览器控制真实 NX / TIA。第二台客户端、LAN 访问、公网/CF 及代理兼容不再是本版交付门槛，旧文中对应远程专属要求由本条覆盖，不能计为 PASS。真实建模/工程操作、菜单/弹窗/中文/保存、单应用与双应用布局、输入安全、恢复、诊断、8 小时耐久、打包及回滚要求继续有效。本机双屏是当前实验实现条件，不代表用户新确认了双显示器产品限制。主技术路线尚未变更；详见 PROJECT_STATUS.md 最新范围记录。**
+
 核对日期：2026-09-03。外部资料证明 API 或产品能力，不证明本项目已经实现或在当前机器运行成功。
 
 ## 1. 用户提供的材料
@@ -121,3 +123,59 @@ Presentations 技能只用于源 PPT 内容核对；OpenAI Docs 影响目标正�
 当前结果见 [场景夹具复测](./M1_FIXTURE_EVIDENCE.md) 和 [M1-02 输入核心](./M1_INPUT_CORE_EVIDENCE.md)。重新核对 Microsoft SendInput、KEYBDINPUT、MOUSEINPUT 的原始文档，落实部分提交不能假定未执行、Unicode 与扫描码分离、虚拟桌面物理坐标等实现约束。原生后端尚未接入，本次 L0 测试不证明实际注入成功。
 
 Computer Use 技能影响本轮真实 NX 验证：新建框索引/焦点不可靠时停止文本操作并取消，明确保留 N0/编辑参数框未验证。没有用其他 UI 自动化绕过这个限制，仍继续独立输入核心实现；没有把工具操作或测试计数冒充网页远控验收。
+
+## 14. 2026-09-04 JPEG 兼容增量
+
+依据 Microsoft [BitmapEncoder](https://learn.microsoft.com/zh-cn/uwp/api/windows.graphics.imaging.bitmapencoder?view=winrt-26100) 提供的内置 JPEG 编码器与 SetPixelData 接口，增加显式 BGRA 读回兼容分支；API 文档仅支持接口选择，不证明 NX 兼容或性能。实际 Windows 编解码往返、真实 NX 同流菜单和浏览器测试分别记于 [M1_JPEG_EVIDENCE.md](./M1_JPEG_EVIDENCE.md)。H.264 主路径仍不调用CPU像素读回。
+
+本轮 Computer Use 能打开/取消 NX 新建框，但字段索引不可用且键盘选择没有可靠可见结果，因此取消，没有创建或保存N0；之后只展开/收起文件菜单以核对实际JPEG媒体。工具点击不计为NX产品输入成功。
+
+## 15. 2026-09-04 真实副本、1080p与尺寸恢复
+
+用户提供样本后，通过Computer Use原生文件框/建模命令完成隔离副本的移动面编辑、取消、保存重开；真实同流参数证据见 [M1_NX_MODEL_EVIDENCE.md](./M1_NX_MODEL_EVIDENCE.md)。技能约束使字段索引失效时改用观察过的原生编辑菜单，未绕过工具注入；原件不改。
+
+重新核对Microsoft [屏幕采集与尺寸变化](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture)：帧池尺寸变化需要重建，帧ContentSize与表面尺寸应分开处理。项目采用退役整个有界节点并重新枚举、分配新输入代次的实现，保持既有身份/几何契约；8次/2秒恢复预算是项目初始限制，不是官方性能保证。该修复由真实NX尺寸变化失败驱动，没有改动WGC/H264主路线或删验收项。
+
+## 16. 2026-09-04 SC03 帧生命周期
+
+[SC03增量](./M1_FRAME_LIFETIME_EVIDENCE.md) 区分L0合成回调、真实Windows夹具经WGC/硬编/浏览器的延迟实验，以及JPEG取消重连。两个失败原始报告保留；浏览器计时器调用接收者与图像所有权修正有对应回归。没有把最初的后台节流猜测写成唯一实测根因，没有将夹具当成真实NX/TIA或十分钟/八小时证据。本轮未做NX原生UI输入。
+
+## 17. 2026-09-04 Closed资源隔离
+
+[资源隔离报告](./M1_RESOURCE_ISOLATION.md) 记录当前进程句柄类型原生查询、Window/item/Closed订阅与原生token的对照，链接Microsoft SDK ABI、NtQueryObject与phnt定义。实际结果不支持显式释放item主引用能修复，已撤回；仍复用WinRT委托marshal的token试验也增长，不能据此断言唯一平台根因。没有改主技术路线或取消关闭安全检测。
+
+后续自建COM sink对照排除CsWinRT委托marshal为必要条件；实际采集改用按目标PID过滤的窗口销毁通知。依据 [Microsoft SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook)，out-of-context事件在注册线程的消息循环异步送达，因此独立线程接收、显式保活委托并在同线程卸载hook。120次实际窗口销毁和根窗关闭有分层证据；窗口快速复用/锁屏/正式Agent故障仍需要后续压力矩阵，不能引用API文档代替验收。
+
+## 18. 2026-09-04 瞬态窗口竞态
+
+实际CreateForWindow对已消失HWND返回E_INVALIDARG的证据来自本机确定性原生夹具；官方[CreateForWindow](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow)只规定接口/HRESULT，[GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid)规定无效HWND返回0。恢复同时核对两项，不把所有参数异常视为可重试。历史NX错误未证实同源，详见[竞态报告](./M1_TRANSIENT_WINDOW_EVIDENCE.md)。
+
+## 18. 2026-09-04 共享设备与捕获生命周期
+
+[共享捕获证据](./M1_SHARED_CAPTURE_EVIDENCE.md)记录每设备Draw、同设备MF管理器/NV12原语、两路WGC并发颜色及60次重新取流。微软[ID3D11Multithread](https://learn.microsoft.com/en-us/windows/win32/api/d3d11_4/nn-d3d11_4-id3d11multithread)说明上下文保护和Enter/Leave；原生锁仅围绕渲染，不跨WGC StartCapture。微软[设备创建标志](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_create_device_flag)说明诊断线程选项；实际对照未改善Event斜率，主路径未改标志。应用重建ALPC增长及设备销毁后未回收仍保留为未通过项。
+
+## 19. 2026-09-04 前端依赖与资源结论更新
+
+通过官方npm registry元数据选择精确版本并保存完整完整性锁文件。来源为 https://registry.npmjs.org/react/19.2.8 、 https://registry.npmjs.org/react-dom/19.2.8 、 https://registry.npmjs.org/typescript/7.0.2 、 https://registry.npmjs.org/vite/8.2.2 和 https://registry.npmjs.org/@vitejs%2fplugin-react/6.1.1 。实际隔离安装/类型检查/构建证据在 artifacts/verification/web-dependencies-20260904-124409-1977090/report.json；包可安装不证明产品UI已实现。
+
+资源结论以M1_RESOURCE_ISOLATION的12:53记录为准：约130秒后ALPC回收、180次真实应用重建资源自行回落；上节短时“未回收”是历史观察，不能再称已证实泄漏或厂商根因。有限SC02通过不替代8小时或真实GPU故障验收。
+
+### 2026-09-04 SC06 Unicode 原始消息诊断
+
+- [KEYBDINPUT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-keybdinput)：UNICODE/KEYUP生成VK_PACKET消息；文档说明不是本机已收到消息的证据，实际原始计数另见报告。
+- [Control.ProcessKeyEventArgs（.NET 10）](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.control.processkeyeventargs?view=windowsdesktop-10.0)：WinForms键消息到托管事件的处理边界。两字符自身窗口20项验证与真实F0长文本诊断分开记录，不由文档推断已修复。
+
+同机实验新增依据：参见 [LOCAL_NX_CONSOLE.md](./LOCAL_NX_CONSOLE.md) 中的 Microsoft 低级鼠标/键盘钩子及注入标记官方文档；短回调、消息线程和静默卸钩限制不得省略。
+
+## 本机范围调研（2026-09-04）
+
+- noVNC 官方：https://novnc.com/info.html 。浏览器 VNC 客户端，需 VNC 服务和 WebSocket 接入。
+- Guacamole 官方架构：https://guacamole.apache.org/doc/gug/guacamole-architecture.html 。浏览器、网关及 RDP/VNC 目标；不是本机 NX 嵌入证明。
+- Sunshine 官方：https://docs.lizardbyte.dev/projects/sunshine/latest/ 。硬编串流与 Moonlight；Web UI 描述为配置/配对。
+- Moonlight 官方：https://moonlight-stream.org/ 。客户端串流，不能把 PC/ChromeOS 客户端等同于普通 Windows 浏览器网页。
+- Microsoft WebView2：https://learn.microsoft.com/en-us/microsoft-edge/webview2/landing/ 。网页嵌入原生应用，不能据此承诺 NX 原生窗口嵌入兼容。
+- Microsoft RDP：https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-allow-access 。Windows Home 不提供受支持的 RDP 主机能力；不自动升级或绕过授权。
+
+## GitHub 源码调研补充（2026-09-04）
+
+见 [本机控制开源参考](./GITHUB_LOCAL_CONTROL_RESEARCH.md)。新增 Sunshine + 非官方 moonlight-web-stream 浏览器候选；读取 Sunshine/noVNC 输入处理源码，保留原始快照与哈希。只有调研证据，没有第三方 NX 实测结论。
