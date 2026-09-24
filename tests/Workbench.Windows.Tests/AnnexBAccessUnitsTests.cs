@@ -67,7 +67,7 @@ public class AnnexBAccessUnitsTests
 
     [Theory]
     [InlineData(0,1280,720)]
-    [InlineData(18001,1280,720)]
+    [InlineData(36001,1280,720)]
     [InlineData(30,64,720)]
     [InlineData(30,1281,720)]
     [InlineData(30,1280,63)]

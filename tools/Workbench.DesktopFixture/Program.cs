@@ -35,6 +35,7 @@ internal static class Program
         if(args.Length==2 && args[0]=="--verify-raw-events")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true,nativeEvents:true,rawDelegate:true);
         if(args.Length==2 && args[0]=="--verify-closed-callbacks")return CaptureResourceVerification.Run(args[1],itemsOnly:true,itemEvents:true,nativeEvents:true,afterClosed:true);
         if(args.SequenceEqual(["--media-scenes"]))return MediaSceneFixture.Run();
+        if(args.SequenceEqual(["--media-motion"]))return MediaMotionFixture.Run();
         if(args.Length==2 && args[0]=="--verify-input")return NativeInputVerification.Run(args[1]);
         if (args.SequenceEqual(["--interactive"]))
         {

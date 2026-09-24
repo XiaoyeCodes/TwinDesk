@@ -1,9 +1,10 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$VerifiedCopy,[switch]$PrepareOnly,[switch]$Jpeg,[switch]$FullHd,[switch]$DualFixture,[switch]$LocalConsole)
+param([Parameter(Mandatory)][string]$VerifiedCopy,[switch]$PrepareOnly,[switch]$Jpeg,[switch]$FullHd,[switch]$DualFixture,[switch]$LocalConsole,[switch]$HighFrameRate)
 . (Join-Path $PSScriptRoot 'environment.ps1')
 $ErrorActionPreference='Stop'
 Push-Location $RepoRoot
 try {
+    if($Jpeg -and $HighFrameRate){throw '60 FPS is H.264-only; JPEG remains the explicit bounded compatibility path.'}
     $copy=Get-Item -LiteralPath $VerifiedCopy
     $verification=[IO.Path]::GetFullPath((Join-Path $RepoRoot 'artifacts/verification'))+[IO.Path]::DirectorySeparatorChar
     if($copy.PSIsContainer -or -not $copy.FullName.StartsWith($verification,[StringComparison]::OrdinalIgnoreCase) -or
@@ -42,14 +43,14 @@ try {
     }
     $evidence=Join-Path $verification ('sc05-nx-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fffffff'))
     New-Item -ItemType Directory -Path $evidence | Out-Null
-    [ordered]@{time=[DateTimeOffset]::Now.ToString('o');status='PREPARED_NOT_INPUT_VERIFIED';scope='Local NX copy admission; title is not proof of opened path; not workflow acceptance';target=$target;
+    [ordered]@{time=[DateTimeOffset]::Now.ToString('o');status='PREPARED_NOT_INPUT_VERIFIED';scope='Local NX copy admission; title is not proof of opened path; not workflow acceptance';target=$target;requestedFps=$(if($HighFrameRate){60}else{30});
         secondTarget=$f0Target;copy=$copy.FullName;copySha256=(Get-FileHash -LiteralPath $copy.FullName -Algorithm SHA256).Hash;
         binaries=@($mediaDll,(Join-Path (Split-Path $mediaDll) 'Workbench.Windows.dll')) | Get-FileHash -Algorithm SHA256 | Select-Object Path,Hash
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'preparation.json') -Encoding utf8
     Write-Host "NX copy input preparation (NOT PASS): $evidence"
     Write-Host 'Prerequisite: native NX UI has confirmed this exact copy path. Keep NX foreground; no automatic activation. Scope guard is not file sandboxing.'
     if($PrepareOnly){return}
-    $modeArguments=@();if($Jpeg){$modeArguments+='--jpeg'};if($FullHd){$modeArguments+='--1080p'}
+    $modeArguments=@();if($Jpeg){$modeArguments+='--jpeg'};if($FullHd){$modeArguments+='--1080p'};if($HighFrameRate){$modeArguments+='--60fps'}
     if($LocalConsole){$modeArguments+='--local-console'}
     if($DualFixture){$modeArguments+=@('--dual-fixture-process',$f0Target.processName,'--dual-fixture-window',"$($f0Target.handle)")}
     & $Dotnet $mediaDll --process ugraf --window "$($target.handle)" --owned --input-nx-copy $copy.FullName @modeArguments

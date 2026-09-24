@@ -16,8 +16,8 @@
 'use strict';
 const status=document.querySelector('#status'),report=document.querySelector('#report');
 const start=document.querySelector('#start'),stop=document.querySelector('#stop');
-const canvas=document.querySelector('#canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
-let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false;
+const canvas=document.querySelector('#canvas');let ctx=null,canvasMode=null;
+let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false,streamFps=30;
 const probePath=location.pathname.endsWith('/')?location.pathname:location.pathname+'/';
 fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable');return r.json();}).then(info=>{
   dualMode=info.dual===true;expectedStream=info.streamId;localConsoleMode=info.localConsole===true;
@@ -28,14 +28,22 @@ fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable
   document.querySelector('#dualInputPanel').hidden=!dualMode;
   inputEnabled=info.inputEnabled;document.querySelector('#inputPanel').hidden=!inputEnabled;
   inputTarget=info.inputTarget;
+  // Only the generated pattern and opt-in F0 pixel calibration read pixels back.
+  // NX/TIA window presentation should not request a readback-oriented canvas.
+  canvasMode=info.source==='window'&&(!info.inputEnabled||info.inputTarget==='NX')?'low-latency-window':'diagnostic-readback';
+  ctx=canvas.getContext('2d',canvasMode==='low-latency-window'
+    ?{alpha:false,desynchronized:true}:{alpha:false,willReadFrequently:true});
+  if(!ctx)throw Error('2D canvas unavailable');
   document.querySelector('#disconnectDiagnostic').hidden=!inputEnabled||inputTarget!=='F0';
   document.querySelector('#calibrationPanel').hidden=!inputEnabled||inputTarget!=='F0';
   document.querySelector('#inputNote').textContent=info.inputTarget==='NX'
     ? `NX 工程副本输入实验：${info.partName}。需已在原生界面核对副本路径，并保持 NX 为本机前台。切换工程将拒绝输入。点击视频可输入；中文用下方提交。无异机或完整工作流验收。`
     : 'F0 回环输入实验，仅控制显式选择的测试窗口。请先在本机激活 F0。点击视频后可输入；中文用下方提交，浏览器保留键不保证截获。';
-  selectedCodec=info.codec??'h264';start.textContent=selectedCodec==='jpeg'?'开始 JPEG 兼容测试':'开始硬编测试';
+  selectedCodec=info.codec??'h264';streamFps=info.fps;
+  if(![30,60].includes(streamFps)||selectedCodec==='jpeg'&&streamFps!==30)throw Error('Unsupported local frame rate');
+  start.textContent=selectedCodec==='jpeg'?'开始 JPEG 兼容测试':'开始硬编测试';
   videoSize=probeVideoSize(info.profile?.width,info.profile?.height);
-  document.querySelector('h1').textContent=`M1 ${selectedCodec==='jpeg'?'JPEG 兼容':'H.264 硬编'} · ${videoSize.width}×${videoSize.height}`;
+  document.querySelector('h1').textContent=`M1 ${selectedCodec==='jpeg'?'JPEG 兼容':'H.264 硬编'} · ${videoSize.width}×${videoSize.height} · ${streamFps} FPS 配置`;
   document.querySelector('#sourceNote').textContent=info.source==='window'
     ? (info.ownedScene?'关联窗口 GPU 合成实验：同进程 owner 与透明混合；辅助进程识别尚未实现。':'本机真实窗口 → WGC / GPU / 硬编。窗口由本地启动参数固定；静止窗口不强制重复帧。')
     : '本机动态测试图，不采集桌面、不注入输入，不代表 UG / 博图验收通过。';
@@ -95,7 +103,7 @@ start.onclick=async()=>{
           run.colorSpace??=frame.colorSpace?.toJSON()??null;
           if(run.firstOutputMs===null)run.firstOutputMs=performance.now()-run.start;
           if(run.source==='pattern'&&(run.decoded%30===0||run.decoded===1)){
-            const frameIndex=Math.round(frame.timestamp*30/1000000),expected=frameIndex*9%(run.width-64);
+            const frameIndex=Math.round(frame.timestamp*streamFps/1000000),expected=frameIndex*9%(run.width-64);
             const pixels=ctx.getImageData(0,96,run.width,1).data;let left=-1;
             for(let x=0;x<run.width;x++){if(pixels[x*4]>220){left=x;break;}}
             run.checks++;if(left<0||Math.abs(left-expected)>5)run.mismatches++;
@@ -115,7 +123,7 @@ start.onclick=async()=>{
         if(!run.decoder)throw Error('Missing decoder');run.presenter.releaseDue();await run.decoder.flush();await run.presenter.settled();if(run.done)return;
         run.staleOutputs=run.presenter.stats.staleScenes+run.presenter.stats.staleSequences;
         const passed=run.received>0&&run.received===message.result.outputFrames&&run.decoded===run.received&&run.timeline.pending.size===0&&run.presented>0&&run.presented+run.staleOutputs===run.decoded&&(run.source==='window'||(run.mismatches===0&&run.checks>0));
-        const result={type:'browserResult',status:passed?'PASS':'FAIL',streamId:expectedStream,width:run.width,height:run.height,codec:run.codec,source:run.source,received:run.received,decoded:run.decoded,presented:run.presented,staleOutputs:run.staleOutputs,sceneDisplays:run.sceneDisplays,patternChecks:run.source==='pattern'?run.checks:null,patternMismatches:run.source==='pattern'?run.mismatches:null,decodedColorSpace:run.colorSpace,firstOutputMs:run.firstOutputMs,maxDecodeQueue:run.maxQueue,elapsedMs:performance.now()-run.start,userAgent:navigator.userAgent,encoder:message.result};
+        const result={type:'browserResult',status:passed?'PASS':'FAIL',streamId:expectedStream,width:run.width,height:run.height,codec:run.codec,source:run.source,received:run.received,decoded:run.decoded,presented:run.presented,staleOutputs:run.staleOutputs,sceneDisplays:run.sceneDisplays,patternChecks:run.source==='pattern'?run.checks:null,patternMismatches:run.source==='pattern'?run.mismatches:null,decodedColorSpace:run.colorSpace,canvasMode,canvasAttributes:ctx.getContextAttributes?.()??null,firstOutputMs:run.firstOutputMs,maxDecodeQueue:run.maxQueue,elapsedMs:performance.now()-run.start,userAgent:navigator.userAgent,encoder:message.result};
         result.input=run.input?.summary();result.presentation={delayFirstMs:run.presenter.delayFirstMs,...run.presenter.stats};result.mediaTiming=run.timings.summary();
         report.textContent=JSON.stringify(result,null,2);status.textContent=passed?(run.source==='window'?'PASS：真实窗口媒体链路完成；输入及真实工作流需单独核对':'PASS：实际硬编 / WS / 解码 / 动态像素检查完成'):'FAIL：帧数或像素检查不匹配';
         socket.send(JSON.stringify(result));run.done=true;cleanup();return;

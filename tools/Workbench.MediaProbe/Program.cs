@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using Workbench.Windows;
 
 // Diagnostic source chosen locally at startup, never by a browser-supplied HWND/process.
@@ -35,9 +36,12 @@ bool inputEnabled = fixtureInput || nxCopy is not null;
 if(localConsole && (!inputEnabled || dual))throw new ArgumentException("Local console requires one explicit input target, no dual source.");
 if(fixtureInput && nxCopy is not null)throw new ArgumentException("Input profiles are mutually exclusive.");
 bool jpeg = args.Contains("--jpeg");
+bool highFrameRate=arguments.Remove("--60fps");
+int fps=highFrameRate?60:30;
 bool delayedSceneOutput=args.Contains("--delay-scene-output");
 var profile=args.Contains("--1080p")?ProbeVideoProfile.FullHd:ProbeVideoProfile.Hd;
-if(args.Count(a=>a=="--jpeg")>1 || args.Count(a=>a=="--input-fixture")>1 || args.Count(a=>a=="--1080p")>1)throw new ArgumentException("Duplicate mode flag.");
+if(args.Count(a=>a=="--jpeg")>1 || args.Count(a=>a=="--input-fixture")>1 || args.Count(a=>a=="--1080p")>1 || args.Count(a=>a=="--60fps")>1)throw new ArgumentException("Duplicate mode flag.");
+if(highFrameRate && jpeg)throw new ArgumentException("60 fps is an H.264-only experiment; JPEG remains on its bounded compatibility path.");
 WindowInfo? captureTarget = SelectLocalTarget(arguments.Where(a=>a!="--input-fixture" && a!="--jpeg" && a!="--1080p" && a!="--delay-scene-output").ToArray());
 bool ownedScene = args.Contains("--owned");
 if(delayedSceneOutput && (args.Count(a=>a=="--delay-scene-output")!=1 || jpeg || inputEnabled || !ownedScene ||
@@ -160,7 +164,7 @@ routes.MapGet("/", async context =>
     await source.CopyToAsync(context.Response.Body, context.RequestAborted);
 });
 if(inputProbe is not null)routes.Map("/control",inputProbe.Serve);
-routes.MapGet("/health/live", () => Results.Json(new { mode = inputEnabled?(nxScope is null?"loopback-f0-input-experiment":"loopback-nx-copy-input-experiment"):"loopback-readonly-media-probe", inputEnabled, localConsole, inputTarget=nxScope is null?"F0":"NX", inputScope, partName=nxScope?.PartName, delayedSceneOutput, codec=jpeg?"jpeg":"h264", profile, streamId, dual, source = sourceKind, ownedScene, busy = Volatile.Read(ref busy) != 0 }));
+routes.MapGet("/health/live", () => Results.Json(new { mode = inputEnabled?(nxScope is null?"loopback-f0-input-experiment":"loopback-nx-copy-input-experiment"):"loopback-readonly-media-probe", inputEnabled, localConsole, inputTarget=nxScope is null?"F0":"NX", inputScope, partName=nxScope?.PartName, delayedSceneOutput, codec=jpeg?"jpeg":"h264", fps, profile, streamId, dual, source = sourceKind, ownedScene, busy = Volatile.Read(ref busy) != 0 }));
 routes.Map("/ws", async context =>
 {
     if (!context.WebSockets.IsWebSocketRequest || context.Request.Headers.Origin != "http://127.0.0.1:8091")
@@ -177,6 +181,10 @@ routes.Map("/ws", async context =>
     try{inputVideo=observe?null:inputProbe?.BeginVideo();}
     catch(InvalidOperationException){Interlocked.Exchange(ref busy,0);context.Response.StatusCode=409;return;}
     using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, app.Lifetime.ApplicationStopping);
+    var h264Timings=jpeg?null:new H264ProbeTimings();
+    var socketSendMs=new LatencyWindow();
+    var frameEmissionIntervalMs=new LatencyWindow();
+    var sourceFrameIntervalMs=new LatencyWindow();
     if(!continuous)cancellation.CancelAfter(TimeSpan.FromSeconds(frameCount / 30.0 + 30));
     try
     {
@@ -188,8 +196,18 @@ routes.Map("/ws", async context =>
         try
         {
             uint announcedScene = 0;
+            long previousEmissionAt=0,previousSourceTimestampUs=-1;
             void SendFrame(byte[] data,long timestampUs,bool keyFrame,string codecString,ProbeSceneConfig? scene)
             {
+                long emissionAt=Stopwatch.GetTimestamp();
+                if(previousEmissionAt!=0)frameEmissionIntervalMs.Record(Stopwatch.GetElapsedTime(previousEmissionAt,emissionAt).TotalMilliseconds);
+                previousEmissionAt=emissionAt;
+                if(!delayedSceneOutput && previousSourceTimestampUs>=0)
+                {
+                    if(timestampUs<=previousSourceTimestampUs)throw new InvalidDataException("Source frame timestamps must increase.");
+                    sourceFrameIntervalMs.Record((timestampUs-previousSourceTimestampUs)/1000.0);
+                }
+                previousSourceTimestampUs=timestampUs;
                 var version = scene?.Version ?? 1u;
                 if(scene is not null)profile.RequireFrame(scene.Width,scene.Height);
                 if (sequence == 0)
@@ -216,7 +234,9 @@ routes.Map("/ws", async context =>
                 data.CopyTo(packet, 40);
                 using var sendTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
                 sendTimeout.CancelAfter(TimeSpan.FromSeconds(1));
-                socket.SendAsync(packet.AsMemory(), WebSocketMessageType.Binary, true, sendTimeout.Token).AsTask().GetAwaiter().GetResult();
+                long sendStart=Stopwatch.GetTimestamp();
+                try{socket.SendAsync(packet.AsMemory(), WebSocketMessageType.Binary, true, sendTimeout.Token).AsTask().GetAwaiter().GetResult();}
+                finally{socketSendMs.Record(Stopwatch.GetElapsedTime(sendStart).TotalMilliseconds);}
             }
             using var encodedDelay=delayedSceneOutput?new ProbeEncodedSceneDelay(frame=>SendFrame(frame.Data,frame.TimestampUs,frame.KeyFrame,frame.CodecString,frame.Scene)):null;
             void Encoded(EncodedAccessUnit frame)
@@ -230,11 +250,11 @@ routes.Map("/ws", async context =>
             object result = jpeg ? await Task.Run(() => JpegProbe.Run(TimeSpan.FromSeconds(frameCount/30.0),
                 RentScene,
                 frame=>SendFrame(frame.Data,frame.TimestampUs,true,"jpeg",frame.Scene),cancellation.Token,profile,continuous),cancellation.Token)
-                : await Task.Run(() => H264Probe.Run(frameCount, true,
+                : await Task.Run(() => H264Probe.Run(continuous?frameCount:checked(frameCount*(fps/30)), true,
                 Encoded,
-                cancellation.Token, width:profile.Width, height:profile.Height, sourceFactory: captureTarget is null ? null : ownedScene
+                cancellation.Token, width:profile.Width, height:profile.Height,fps:fps,sourceFactory: captureTarget is null ? null : ownedScene
                 ? RentScene
-                : () => windowSource = new WgcNv12Source(captureTarget, profile.Width, profile.Height),continuous:continuous), cancellation.Token);
+                : () => windowSource = new WgcNv12Source(captureTarget, profile.Width, profile.Height),continuous:continuous,timings:h264Timings), cancellation.Token);
             encodedDelay?.Complete();
             SendText(socket, new { type = "probeEnd", result }, cancellation.Token);
             var browser = await receive.WaitAsync(TimeSpan.FromSeconds(10));
@@ -246,7 +266,7 @@ routes.Map("/ws", async context =>
                 ? "Generated pattern through actual hardware MFT + WS + browser decoder; not NX acceptance"
                 : inputVideo is not null ? inputScope
                 : "Read-only WGC window + WS + browser decoder; no product input or NX workflow acceptance",
-                codec=jpeg?"jpeg":"h264", profile, compatibilityReason=jpeg?"Explicit local comparison; not automatic fallback or hardware performance PASS":null,
+                codec=jpeg?"jpeg":"h264",fps, profile, compatibilityReason=jpeg?"Explicit local comparison; not automatic fallback or hardware performance PASS":null,
                 buildIdentity, encodedDelay, streamId,inputScope=inputVideo is not null?inputScope:null, diagnosticPart=nxScope?.PartName, inputDiagnostics=inputVideo?.Diagnostics, target = captureTarget, ownedScene, scenes = sceneSource?.SceneHistory,
                 capturedFrames = sceneSource?.CapturedFrames ?? windowSource?.CapturedFrames,
                 supersededFrames = sceneSource?.SupersededFrames ?? windowSource?.SupersededFrames,
@@ -255,6 +275,7 @@ routes.Map("/ws", async context =>
                 sceneHistoryDropped = sceneSource?.SceneHistoryDropped,
                 graphicsDeviceIdentity=sceneSource?.GraphicsDeviceIdentity,
                 captureCountersScope="Persistent application capture lifetime; encoder result and browser counts are per connection",
+                transportTiming=new {socketSendMs=socketSendMs.Snapshot(),frameEmissionIntervalMs=frameEmissionIntervalMs.Snapshot(),sourceFrameIntervalMs=sourceFrameIntervalMs.Snapshot()},
                 receivedDestroyEvents = sceneSource?.ReceivedDestroyEvents, result, browser }, jsonOptions);
             app.Logger.LogInformation("Probe evidence: {ReportPath}", reportPath);
         }
@@ -265,10 +286,11 @@ routes.Map("/ws", async context =>
             else app.Logger.LogWarning("Media probe failed: {Type} {Error}", e.GetType().Name, e.Message);
             var failureDirectory=Path.GetFullPath("artifacts/verification/media-probe");Directory.CreateDirectory(failureDirectory);
             await using(var failureReport=new FileStream(Path.Combine(failureDirectory,$"{(userStopped?"stopped":"failed")}-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.json"),FileMode.CreateNew))
-                await JsonSerializer.SerializeAsync(failureReport,new {status=userStopped?"STOPPED":"FAIL",scope=userStopped?"User-ended local NX experiment; not workflow or latency PASS":"M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,codec=jpeg?"jpeg":"h264",
+                await JsonSerializer.SerializeAsync(failureReport,new {status=userStopped?"STOPPED":"FAIL",scope=userStopped?"User-ended local NX experiment; not workflow or latency PASS":"M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,fps,codec=jpeg?"jpeg":"h264",
                     streamId,inputScope=inputVideo is not null?inputScope:null, diagnosticPart=nxScope?.PartName,inputDiagnostics=inputVideo?.Diagnostics,errorType=e.GetType().Name,error=e.Message,
                     errorHresult=$"0x{e.HResult:X8}",errorStack=e.ToString(),
-                    framesSent=sequence,scenes=sceneSource?.SceneHistory,
+                    framesSent=sequence,h264Timing=h264Timings?.Snapshot(),
+                    transportTiming=new {socketSendMs=socketSendMs.Snapshot(),frameEmissionIntervalMs=frameEmissionIntervalMs.Snapshot(),sourceFrameIntervalMs=sourceFrameIntervalMs.Snapshot()},scenes=sceneSource?.SceneHistory,
                     capturedFrames=sceneSource?.CapturedFrames??windowSource?.CapturedFrames,
                     captureGeometryRetries=sceneSource?.CaptureGeometryRetries,
                     transientBindingRetries=sceneSource?.TransientBindingRetries,

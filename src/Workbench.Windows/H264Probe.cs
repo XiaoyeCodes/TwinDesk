@@ -18,6 +18,16 @@ public sealed record H264ProbeResult(string Source, string Encoder, bool Hardwar
     public LatencySummary InputSubmitMs {get;init;}=new(0,0,0,0,0);
     public LatencySummary EncoderResidenceMs {get;init;}=new(0,0,0,0,0);
 }
+public sealed record H264ProbeTimingSummary(LatencySummary SourcePollMs,LatencySummary InputSubmitMs,LatencySummary EncoderResidenceMs);
+// The report owner can read this even when a live run is intentionally cancelled by F12.
+// Each window uses the same process-local monotonic clock and is bounded to 256 samples.
+public sealed class H264ProbeTimings
+{
+    public LatencyWindow SourcePollMs {get;}=new();
+    public LatencyWindow InputSubmitMs {get;}=new();
+    public LatencyWindow EncoderResidenceMs {get;}=new();
+    public H264ProbeTimingSummary Snapshot()=>new(SourcePollMs.Snapshot(),InputSubmitMs.Snapshot(),EncoderResidenceMs.Snapshot());
+}
 
 /// <summary>Finite MFT experiment with an explicit generated NV12 or live GPU source.</summary>
 public static class H264Probe
@@ -31,11 +41,11 @@ public static class H264Probe
     // Run on one worker thread: native event handling and callbacks never concurrently access the MFT.
     public static H264ProbeResult Run(int frameCount, bool hardware, Action<EncodedAccessUnit> onFrame,
         CancellationToken cancellationToken, int width = 1280, int height = 720, int fps = 30,
-        Func<IProbeFrameSource>? sourceFactory = null,bool continuous=false)
+        Func<IProbeFrameSource>? sourceFactory = null,bool continuous=false,H264ProbeTimings? timings=null)
     {
         ArgumentNullException.ThrowIfNull(onFrame);
         if(continuous && (sourceFactory is null || !cancellationToken.CanBeCanceled))throw new ArgumentException("Continuous mode requires a cancellable real source.");
-        if (frameCount is < 1 or > 18000 || width is < 128 or > 2560 || height is < 128 or > 1440
+        if (frameCount is < 1 or > 36000 || width is < 128 or > 2560 || height is < 128 or > 1440
             || (width & 1) != 0 || (height & 1) != 0 || fps is < 1 or > 60)
             throw new ArgumentOutOfRangeException(nameof(frameCount), "Invalid bounded probe settings.");
         cancellationToken.ThrowIfCancellationRequested();
@@ -76,9 +86,9 @@ public static class H264Probe
                 using var events = isAsync ? transform.QueryInterface<IMFMediaEventGenerator>() : null;
                 var normalizer = new AnnexBAccessUnits();
                 var scenes = new FrameSceneLedger(frameSource is null ? 256 : 8);
-                var sourcePoll=new LatencyWindow();
-                var inputSubmit=new LatencyWindow();
-                var encoderResidence=new LatencyWindow();
+                var sourcePoll=timings?.SourcePollMs??new LatencyWindow();
+                var inputSubmit=timings?.InputSubmitMs??new LatencyWindow();
+                var encoderResidence=timings?.EncoderResidenceMs??new LatencyWindow();
                 var submittedAt=new Dictionary<long,long>();
                 var watch = Stopwatch.StartNew();
                 var lastProgress = watch.Elapsed;
@@ -132,8 +142,16 @@ public static class H264Probe
                         && (frameSource is null || sent - received < 8)
                         && watch.Elapsed.TotalSeconds >= (frameSource is null ? (double)sent / fps : nextSourcePoll))
                     {
-                        nextSourcePoll = watch.Elapsed.TotalSeconds + 1.0 / fps;
                         using var sample = frameSource is null ? GeneratedSample() : PollSource();
+                        if(frameSource is not null)
+                        {
+                            // Keep the capture cadence anchored to the previous deadline.
+                            // Adding a full period to the *actual* wake time loses a desktop
+                            // timer quantum on each iteration (about 21 polls/s for a 30 fps
+                            // target on this host). A slow poll never triggers a burst of
+                            // catch-up submissions: the next deadline is at least now.
+                            nextSourcePoll=Math.Max(nextSourcePoll+1.0/fps,watch.Elapsed.TotalSeconds);
+                        }
                         if (sample is null) continue;
                         scenes.Add(sample.SampleTime, frameSource?.LastSampleScene);
                         if(submittedAt.Count>=256 || !submittedAt.TryAdd(sample.SampleTime,Stopwatch.GetTimestamp()))

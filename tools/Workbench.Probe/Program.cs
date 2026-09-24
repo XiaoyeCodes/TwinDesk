@@ -88,6 +88,7 @@ try
         Directory.CreateDirectory(Path.GetDirectoryName(encodedPath)!);
         using var encodedFile = new FileStream(encodedPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
         var frameIndex = new List<object>();
+        var liveTiming=new H264ProbeTimings();
         using var encodeCancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; encodeCancellation.Cancel(); };
         WgcNv12Source? windowSource = null;
@@ -98,9 +99,13 @@ try
             encodedFile.Write(frame.Data);
         }, encodeCancellation.Token, sourceFactory: !liveWindow ? null : args.Contains("--owned")
             ? () => ownedSource = new WgcOwnedNv12Source(captureTarget!, 1280, 720)
-            : () => windowSource = new WgcNv12Source(captureTarget!, 1280, 720)));
+            : () => windowSource = new WgcNv12Source(captureTarget!, 1280, 720),timings:liveTiming));
         encodedFile.Flush();
+        var timingSnapshot=liveTiming.Snapshot();
+        if(timingSnapshot!=new H264ProbeTimingSummary(encodedResult.SourcePollMs,encodedResult.InputSubmitMs,encodedResult.EncoderResidenceMs))
+            throw new InvalidDataException("Live encoder timing and final result diverged.");
         await PrintReportAsync(new { result = encodedResult, path = encodedPath, target = captureTarget,
+            liveTiming=timingSnapshot,
             capturedFrames = ownedSource?.CapturedFrames ?? windowSource?.CapturedFrames,
             supersededFrames = ownedSource?.SupersededFrames ?? windowSource?.SupersededFrames,
             scenes = ownedSource?.SceneHistory, frames = frameIndex }, encodedReport);

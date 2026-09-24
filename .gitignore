@@ -3,6 +3,7 @@
 .tools/
 **/bin/
 **/obj/
+**/TestResults/
 **/node_modules/
 **/dist/
 artifacts/
