@@ -19,7 +19,9 @@
 
 - 默认进程名 `ugraf`，可用 `--process` 选择测试夹具或实际 TIA 进程名。
 - 多窗口时先 `--list`，再将返回的十进制 handle 作为 `--window` 参数。它只能选择匹配进程枚举得到的可见顶层窗口。不要把这个本机诊断参数暴露为网页 API。
+- `--encode-window --owned` 可加 `--1080p --60fps` 做只读 H.264 候选档短测：1920×1080、60 FPS 配置、目标码率 10 Mbps。仍需指定已核对的 `--window`；静止 NX 只输出一帧不代表动态帧率或延迟通过。
 - 最小化目标不会自动恢复，明确报错；恢复窗口后再运行。
+- 只读诊断 `--observe-minimized --process ugraf --window <当前句柄> --seconds 5 --report artifacts/verification/<新文件>.json` 仅观察真实最小化 HWND 的 WGC 帧到达数（限 1–10 秒），不保存图像、不注入输入，也不开放正式控制。先用 `--list` 取得当次句柄，再由用户将目标最小化；诊断后本地恢复。`NO_FRAME_WHILE_MINIMIZED` 是观察结果，不是实时后台控制通过；即使收到帧，也还需证明帧内容变化、弹窗、输入与真实 NX 工作流。
 - `--children` 默认过滤隐藏子窗口；诊断布局可加 `--include-hidden`。
 - `--report <新文件.json>` 保存任一模式的报告；`--output <新文件.png>` 保存采集截图。采集默认同时保存同名 JSON。已有输出拒绝覆盖，方便保留失败和历史证据。
 - Ctrl+C 取消采集。测试时间为首帧快照之后的观察时间，不是视频帧率基准。

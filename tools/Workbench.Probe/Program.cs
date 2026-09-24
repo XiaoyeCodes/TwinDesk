@@ -57,7 +57,8 @@ try
     {
         Console.WriteLine("Workbench.Probe [--process ugraf] [--window <handle>] [--list | --children | --encoders | --displays] [--include-hidden] [--report <new.json>] [--output <new.png>] [--seconds 0..600]");
         Console.WriteLine("Workbench.Probe --encode-test [--software] [--frames 1..18000] [--output <new.h264>] [--report <new.json>]");
-        Console.WriteLine("Workbench.Probe --encode-window [--owned] [--process ugraf] [--window <handle>] [--seconds 1..600] [--output <new.h264>] [--report <new.json>]");
+        Console.WriteLine("Workbench.Probe --encode-window [--owned] [--1080p --60fps] [--process ugraf] [--window <handle>] [--seconds 1..600] [--output <new.h264>] [--report <new.json>]");
+        Console.WriteLine("Workbench.Probe --observe-minimized --process ugraf --window <handle> [--seconds 1..10] [--report <new.json>] (read-only WGC frame arrival; no input/image)");
         Console.WriteLine("Local diagnostic tool only. Never injects input or closes applications. --encoders only activates; --encode-test encodes a generated NV12 pattern, not NX/TIA.");
         return 0;
     }
@@ -71,9 +72,31 @@ try
         await PrintReportAsync(new { recordedAt = DateTimeOffset.Now, stage = "enumeration-and-activation-only", encoders = EncoderCatalog.ProbeH264() });
         return 0;
     }
+    if(args.Contains("--observe-minimized"))
+    {
+        var observedTarget=SelectWindow(requireMinimized:true);
+        var observeSeconds=double.Parse(GetOption("--seconds")??"5",CultureInfo.InvariantCulture);
+        if(!double.IsFinite(observeSeconds) || observeSeconds is <1 or >10)throw new ArgumentOutOfRangeException("--seconds","Use 1..10 seconds.");
+        var report=GetOption("--report")??Path.Combine("artifacts","verification",$"minimized-wgc-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.json");
+        try
+        {
+            var observation=await WgcProbe.ObserveMinimizedAsync(observedTarget,TimeSpan.FromSeconds(observeSeconds),CancellationToken.None);
+            await PrintReportAsync(observation,report);
+            return observation.Status is "NO_FRAME_WHILE_MINIMIZED" or "FRAMES_WHILE_MINIMIZED_NOT_LIVE_VERIFIED"?0:1;
+        }
+        catch(Exception e)
+        {
+            await PrintReportAsync(new {status="CAPTURE_SETUP_FAILED",target=observedTarget,error=e.ToString(),recordedAt=DateTimeOffset.Now,
+                measurementNote="Read-only minimized WGC diagnostic; no input or image."},report);
+            return 1;
+        }
+    }
     if (args.Contains("--encode-test") || args.Contains("--encode-window"))
     {
         bool liveWindow = args.Contains("--encode-window");
+        int videoWidth=args.Contains("--1080p")?1920:1280,videoHeight=args.Contains("--1080p")?1080:720;
+        int videoFps=args.Contains("--60fps")?60:30;
+        uint targetBitrate=args.Contains("--1080p")?10_000_000u:4_000_000u;
         var observedSeconds = double.Parse(GetOption("--seconds") ?? "3", CultureInfo.InvariantCulture);
         if (!double.IsFinite(observedSeconds) || observedSeconds is < 1 or > 600)
             throw new ArgumentOutOfRangeException("--seconds", "Use 1..600 seconds.");
@@ -81,8 +104,8 @@ try
         var encodedPath = Path.GetFullPath(GetOption("--output") ?? Path.Combine("artifacts", "verification", $"h264-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.h264"));
         var encodedReport = GetOption("--report") ?? Path.ChangeExtension(encodedPath, ".json");
         if (File.Exists(encodedReport) || File.Exists(encodedPath)) throw new IOException("Evidence output already exists; select new output paths.");
-        var count = liveWindow ? (int)Math.Ceiling(observedSeconds * 30) : int.Parse(GetOption("--frames") ?? "90", CultureInfo.InvariantCulture);
-        if (count is < 1 or > 18000) throw new ArgumentOutOfRangeException("--frames", "Use 1..18000 frames.");
+        var count = liveWindow ? (int)Math.Ceiling(observedSeconds * videoFps) : int.Parse(GetOption("--frames") ?? "90", CultureInfo.InvariantCulture);
+        if (count is < 1 or > 36000) throw new ArgumentOutOfRangeException("--frames", "Use 1..36000 frames.");
         if (Path.GetFullPath(encodedReport).Equals(encodedPath, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Encoded data and report require different paths.");
         Directory.CreateDirectory(Path.GetDirectoryName(encodedPath)!);
@@ -98,8 +121,9 @@ try
             frameIndex.Add(new { offset = encodedFile.Position, length = frame.Data.Length, frame.TimestampUs, frame.KeyFrame, frame.NalTypes, frame.Scene });
             encodedFile.Write(frame.Data);
         }, encodeCancellation.Token, sourceFactory: !liveWindow ? null : args.Contains("--owned")
-            ? () => ownedSource = new WgcOwnedNv12Source(captureTarget!, 1280, 720)
-            : () => windowSource = new WgcNv12Source(captureTarget!, 1280, 720),timings:liveTiming));
+            ? () => ownedSource = new WgcOwnedNv12Source(captureTarget!, videoWidth, videoHeight)
+            : () => windowSource = new WgcNv12Source(captureTarget!, videoWidth, videoHeight),
+            width:videoWidth,height:videoHeight,fps:videoFps,timings:liveTiming,targetBitrate:targetBitrate));
         encodedFile.Flush();
         var timingSnapshot=liveTiming.Snapshot();
         if(timingSnapshot!=new H264ProbeTimingSummary(encodedResult.SourcePollMs,encodedResult.InputSubmitMs,encodedResult.EncoderResidenceMs))
@@ -160,7 +184,7 @@ string? GetOption(string name)
 void ValidateArguments()
 {
     string[] valueNames = ["--process", "--window", "--report", "--output", "--seconds", "--frames"];
-    string[] flags = ["--help", "--list", "--children", "--encoders", "--displays", "--include-hidden", "--encode-test", "--encode-window", "--software", "--owned"];
+    string[] flags = ["--help", "--list", "--children", "--encoders", "--displays", "--include-hidden", "--encode-test", "--encode-window", "--observe-minimized", "--software", "--owned", "--1080p", "--60fps"];
     var seen = new HashSet<string>(StringComparer.Ordinal);
     for (int i = 0; i < args.Length; i++)
     {
@@ -169,7 +193,7 @@ void ValidateArguments()
         if (valueNames.Contains(name)) { _ = GetOption(name); i++; }
         else if (!flags.Contains(name)) throw new ArgumentException($"Unknown option: {name}.");
     }
-    if (new[] {"--list","--children","--encoders","--displays","--encode-test","--encode-window"}.Count(seen.Contains) > 1)
+    if (new[] {"--list","--children","--encoders","--displays","--encode-test","--encode-window","--observe-minimized"}.Count(seen.Contains) > 1)
         throw new ArgumentException("Choose one probe mode.");
     if (!seen.Contains("--encode-test") && (seen.Contains("--software") || seen.Contains("--frames")))
         throw new ArgumentException("--software/--frames require --encode-test.");
@@ -179,9 +203,13 @@ void ValidateArguments()
         throw new ArgumentException("--include-hidden requires --children.");
     if (seen.Contains("--owned") && !seen.Contains("--encode-window"))
         throw new ArgumentException("--owned requires --encode-window.");
+    if ((seen.Contains("--1080p") || seen.Contains("--60fps")) && !seen.Contains("--encode-window"))
+        throw new ArgumentException("--1080p/--60fps require --encode-window.");
+    if(seen.Contains("--observe-minimized") && (!seen.Contains("--window") || seen.Contains("--output") || seen.Contains("--owned")))
+        throw new ArgumentException("Minimized observation requires an explicit HWND and writes only a JSON report.");
 }
 
-WindowInfo SelectWindow()
+WindowInfo SelectWindow(bool requireMinimized=false)
 {
     var processName = GetOption("--process") ?? "ugraf";
     var windows = WindowCatalog.Find(processName);
@@ -189,7 +217,8 @@ WindowInfo SelectWindow()
     var selected = handle is null ? windows.Where(w => w.Owner == 0).ToArray()
         : windows.Where(w => w.Handle == long.Parse(handle, CultureInfo.InvariantCulture)).ToArray();
     if (selected.Length != 1) throw new InvalidOperationException("Select exactly one current window with --list and --window.");
-    if (selected[0].Minimized) throw new InvalidOperationException("Target is minimized; restore locally before capturing.");
+    if (selected[0].Minimized!=requireMinimized)
+        throw new InvalidOperationException(requireMinimized?"Target is not minimized.":"Target is minimized; restore locally before capturing.");
     return selected[0];
 }
 

@@ -17,6 +17,7 @@ public sealed record H264ProbeResult(string Source, string Encoder, bool Hardwar
     public LatencySummary SourcePollMs {get;init;}=new(0,0,0,0,0);
     public LatencySummary InputSubmitMs {get;init;}=new(0,0,0,0,0);
     public LatencySummary EncoderResidenceMs {get;init;}=new(0,0,0,0,0);
+    public uint TargetBitrate {get;init;}
 }
 public sealed record H264ProbeTimingSummary(LatencySummary SourcePollMs,LatencySummary InputSubmitMs,LatencySummary EncoderResidenceMs);
 // The report owner can read this even when a live run is intentionally cancelled by F12.
@@ -41,13 +42,16 @@ public static class H264Probe
     // Run on one worker thread: native event handling and callbacks never concurrently access the MFT.
     public static H264ProbeResult Run(int frameCount, bool hardware, Action<EncodedAccessUnit> onFrame,
         CancellationToken cancellationToken, int width = 1280, int height = 720, int fps = 30,
-        Func<IProbeFrameSource>? sourceFactory = null,bool continuous=false,H264ProbeTimings? timings=null)
+        Func<IProbeFrameSource>? sourceFactory = null,bool continuous=false,H264ProbeTimings? timings=null,
+        uint targetBitrate=4_000_000)
     {
         ArgumentNullException.ThrowIfNull(onFrame);
         if(continuous && (sourceFactory is null || !cancellationToken.CanBeCanceled))throw new ArgumentException("Continuous mode requires a cancellable real source.");
         if (frameCount is < 1 or > 36000 || width is < 128 or > 2560 || height is < 128 or > 1440
             || (width & 1) != 0 || (height & 1) != 0 || fps is < 1 or > 60)
             throw new ArgumentOutOfRangeException(nameof(frameCount), "Invalid bounded probe settings.");
+        if(targetBitrate is < 1_000_000 or > 20_000_000)
+            throw new ArgumentOutOfRangeException(nameof(targetBitrate), "Use 1–20 Mbps for this probe.");
         cancellationToken.ThrowIfCancellationRequested();
         int frameLimit=continuous?int.MaxValue:frameCount;
         MediaFactory.MFStartup().CheckError();
@@ -76,7 +80,7 @@ public static class H264Probe
                 try { transform.GetStreamIDs(1, inputIds, 1, outputIds); }
                 catch (Exception e) when (e.HResult == unchecked((int)0x80004001)) { } // E_NOTIMPL means consecutive IDs.
                 using var outputType = CreateType(H264, width, height, fps);
-                outputType.Set(MediaTypeAttributeKeys.AvgBitrate, 4_000_000u).CheckError();
+                outputType.Set(MediaTypeAttributeKeys.AvgBitrate, targetBitrate).CheckError();
                 outputType.Set(MediaTypeAttributeKeys.Mpeg2Profile, 66u).CheckError(); // Baseline has no B slices.
                 if (frameSource is not null) SetColorMetadata(outputType);
                 transform.SetOutputType(outputIds[0], outputType, 0);
@@ -175,7 +179,7 @@ public static class H264Probe
                 return new(frameSource?.Description ?? "generated-nv12-moving-pattern (not NX/TIA)", name, hardware, isAsync,
                     width, height, fps, sent, received, bytes, watch.Elapsed.TotalSeconds, firstMs,
                     normalizer.CodecString ?? throw new InvalidDataException("No SPS codec configuration."), "annexb", outputTypeChanges, DateTimeOffset.Now)
-                {SourcePollMs=sourcePoll.Snapshot(),InputSubmitMs=inputSubmit.Snapshot(),EncoderResidenceMs=encoderResidence.Snapshot()};
+                {SourcePollMs=sourcePoll.Snapshot(),InputSubmitMs=inputSubmit.Snapshot(),EncoderResidenceMs=encoderResidence.Snapshot(),TargetBitrate=targetBitrate};
 
                 IMFSample? PollSource()
                 {

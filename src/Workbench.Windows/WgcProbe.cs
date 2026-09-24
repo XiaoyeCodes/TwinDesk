@@ -14,8 +14,71 @@ public sealed record CaptureProbeResult(string Mode, string WindowTitle, int Wid
     int Frames, double DurationSeconds, double FrameArrivalRate, double FirstFrameMs, string SnapshotPath,
     WindowInfo Target, DateTimeOffset RecordedAt, string MeasurementNote);
 
+public sealed record MinimizedCaptureObservation(string Status, int ItemWidth, int ItemHeight,
+    int Frames, double DurationSeconds, double? FirstFrameMs, WindowInfo Target, DateTimeOffset RecordedAt,
+    string MeasurementNote)
+{ public string? CallbackError {get;init;} }
+
 public static class WgcProbe
 {
+    // Deliberately separate from RunAsync: this read-only diagnostic never grants a capture
+    // binding, saves a frame, or weakens the normal minimized-window rejection.
+    public static async Task<MinimizedCaptureObservation> ObserveMinimizedAsync(WindowInfo target,
+        TimeSpan duration, CancellationToken cancellationToken)
+    {
+        if(duration < TimeSpan.FromSeconds(1) || duration > TimeSpan.FromSeconds(10))
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        var live=WindowCatalog.Find(target.ProcessName).SingleOrDefault(w=>
+            OwnedWindowScene.SameIdentity(w,target))
+            ?? throw new InvalidOperationException("Target identity changed before minimized observation.");
+        if(!live.Minimized)throw new InvalidOperationException("This diagnostic requires an actually minimized target.");
+        if(!GraphicsCaptureSession.IsSupported())throw new NotSupportedException("WGC unavailable in this session.");
+        D3D11.D3D11CreateDevice(null,DriverType.Hardware,DeviceCreationFlags.BgraSupport,
+            [FeatureLevel.Level_11_1,FeatureLevel.Level_11_0],out ID3D11Device device,out ID3D11DeviceContext context).CheckError();
+        using(device)
+        using(context)
+        using(var dxgi=device.QueryInterface<IDXGIDevice>())
+        using(var captureDevice=GraphicsCaptureInterop.FromDxgiDevice(dxgi.NativePointer))
+        {
+            var item=GraphicsCaptureInterop.ForWindow((nint)live.Handle);
+            var size=item.Size;
+            if(size.Width<1 || size.Height<1 || size.Width>8192 || size.Height>8192)
+                throw new InvalidDataException("Minimized capture item has invalid dimensions.");
+            using var pool=Direct3D11CaptureFramePool.CreateFreeThreaded(captureDevice,
+                DirectXPixelFormat.B8G8R8A8UIntNormalized,2,size);
+            using var session=pool.CreateCaptureSession(item);
+            int frames=0;
+            long firstTicks=0;
+            Exception? callbackFailure=null;
+            var watch=Stopwatch.StartNew();
+            TypedEventHandler<Direct3D11CaptureFramePool,object> handler=(sender,_)=>
+            {
+                try
+                {
+                    using var frame=sender.TryGetNextFrame();
+                    if(frame is null)return;
+                    if(Interlocked.Increment(ref frames)==1)Interlocked.Exchange(ref firstTicks,watch.ElapsedTicks);
+                }
+                catch(Exception e) {Interlocked.CompareExchange(ref callbackFailure,e,null);}
+            };
+            pool.FrameArrived+=handler;
+            try
+            {
+                session.StartCapture();
+                await Task.Delay(duration,cancellationToken);
+                var after=WindowCatalog.Find(target.ProcessName).SingleOrDefault(w=>OwnedWindowScene.SameIdentity(w,target));
+                var stillMinimized=after?.Minimized==true;
+                return new(callbackFailure is not null?"CAPTURE_CALLBACK_FAILED":
+                    stillMinimized?(frames==0?"NO_FRAME_WHILE_MINIMIZED":"FRAMES_WHILE_MINIMIZED_NOT_LIVE_VERIFIED")
+                    :"INCONCLUSIVE_TARGET_CHANGED",size.Width,size.Height,frames,watch.Elapsed.TotalSeconds,
+                    firstTicks==0?null:firstTicks*1000.0/Stopwatch.Frequency,live,DateTimeOffset.Now,
+                    "Read-only WGC frame-arrival observation while the real HWND is minimized. No pixels, input, app workflow or dynamic frame validation; a nonzero count alone does not prove usable background capture.")
+                    {CallbackError=callbackFailure?.ToString()};
+            }
+            finally {pool.FrameArrived-=handler;}
+        }
+    }
+
     public static async Task<CaptureProbeResult> RunAsync(WindowInfo window, string outputPath, TimeSpan duration, CancellationToken cancellationToken)
     {
         if (duration < TimeSpan.Zero || duration > TimeSpan.FromMinutes(10)) throw new ArgumentOutOfRangeException(nameof(duration));

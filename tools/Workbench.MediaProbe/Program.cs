@@ -11,6 +11,16 @@ using Workbench.Windows;
 // Input is explicit local opt-in only; no LAN/public exposure or authenticated product Host.
 WindowCatalog.SetDpiAwareness();
 var arguments=args.ToList();
+int port=8091;
+if(arguments.Contains("--port"))
+{
+    int index=arguments.IndexOf("--port");
+    if(arguments.Count(a=>a=="--port")!=1||index+1>=arguments.Count||
+        !int.TryParse(arguments[index+1],out port)||port is not (8091 or 8093))
+        throw new ArgumentException("Diagnostic port must be 8091 or 8093.");
+    arguments.RemoveRange(index,2);
+}
+string loopbackOrigin=$"http://127.0.0.1:{port}";
 bool localConsole=arguments.Remove("--local-console");
 string? nxCopy=null;
 if(arguments.Contains("--input-nx-copy"))
@@ -30,9 +40,20 @@ foreach(var option in new[]{"--dual-fixture-process","--dual-fixture-window"})
     arguments.RemoveRange(index,2);
 }
 if((dualFixtureProcess is null)!=(dualFixtureHandle is null))throw new ArgumentException("Both dual fixture selectors are required.");
-bool dual=dualFixtureHandle is not null;
+string? dualNxHandle=null;
+if(arguments.Contains("--dual-nx-window"))
+{
+    int index=arguments.IndexOf("--dual-nx-window");
+    if(arguments.Count(a=>a=="--dual-nx-window")!=1||index+1>=arguments.Count||arguments[index+1].StartsWith("--"))
+        throw new ArgumentException("An explicit second NX HWND is required.");
+    dualNxHandle=arguments[index+1];arguments.RemoveRange(index,2);
+}
+bool dualNx=dualNxHandle is not null;
+bool dual=dualFixtureHandle is not null||dualNx;
 bool fixtureInput=arguments.Contains("--input-fixture");
 bool inputEnabled = fixtureInput || nxCopy is not null;
+if(dualNx && (dualFixtureHandle is not null||inputEnabled||localConsole))
+    throw new ArgumentException("Dual NX probe is read-only; no fixture or local input mode may be combined.");
 if(localConsole && (!inputEnabled || dual))throw new ArgumentException("Local console requires one explicit input target, no dual source.");
 if(fixtureInput && nxCopy is not null)throw new ArgumentException("Input profiles are mutually exclusive.");
 bool jpeg = args.Contains("--jpeg");
@@ -40,6 +61,7 @@ bool highFrameRate=arguments.Remove("--60fps");
 int fps=highFrameRate?60:30;
 bool delayedSceneOutput=args.Contains("--delay-scene-output");
 var profile=args.Contains("--1080p")?ProbeVideoProfile.FullHd:ProbeVideoProfile.Hd;
+uint h264TargetBitrate=profile==ProbeVideoProfile.FullHd?10_000_000u:4_000_000u;
 if(args.Count(a=>a=="--jpeg")>1 || args.Count(a=>a=="--input-fixture")>1 || args.Count(a=>a=="--1080p")>1 || args.Count(a=>a=="--60fps")>1)throw new ArgumentException("Duplicate mode flag.");
 if(highFrameRate && jpeg)throw new ArgumentException("60 fps is an H.264-only experiment; JPEG remains on its bounded compatibility path.");
 WindowInfo? captureTarget = SelectLocalTarget(arguments.Where(a=>a!="--input-fixture" && a!="--jpeg" && a!="--1080p" && a!="--delay-scene-output").ToArray());
@@ -60,20 +82,35 @@ using var sharedGraphics=ownedScene?new CaptureGraphicsDevice():null;
 WindowInfo? dualFixture=null;
 if(dual)
 {
-    if(nxScope is null||!ownedScene||delayedSceneOutput)throw new ArgumentException("Dual comparison requires explicit NX copy input profile.");
-    dualFixture=SelectLocalTarget(new[]{"--process",dualFixtureProcess!,"--window",dualFixtureHandle!});
-    if(dualFixture is null||dualFixture.Title!="TwinDesk F0 input fixture — NOT NX / TIA"||
-        Path.GetFileName(dualFixture.ExecutablePath)!="dotnet.exe"&&Path.GetFileName(dualFixture.ExecutablePath)!="Workbench.DesktopFixture.exe")
-        throw new ArgumentException("Second source must be the explicit own F0 fixture, never an inferred TIA window.");
+    if(!ownedScene||delayedSceneOutput)throw new ArgumentException("Dual capture requires owned window scenes.");
+    if(dualNx)
+    {
+        if(captureTarget is null||!string.Equals(captureTarget.ProcessName,"ugraf",StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("First source must be an explicitly selected NX window.");
+        dualFixture=SelectLocalTarget(new[]{"--process","ugraf","--window",dualNxHandle!});
+        if(dualFixture is null||dualFixture.Handle==captureTarget.Handle||dualFixture.ProcessId==captureTarget.ProcessId||
+            !string.Equals(dualFixture.ExecutablePath,captureTarget.ExecutablePath,StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Two distinct NX processes and root windows are required.");
+    }
+    else
+    {
+        if(nxScope is null)throw new ArgumentException("Dual fixture comparison requires explicit NX copy input profile.");
+        dualFixture=SelectLocalTarget(new[]{"--process",dualFixtureProcess!,"--window",dualFixtureHandle!});
+        if(dualFixture is null||dualFixture.Title!="TwinDesk F0 input fixture — NOT NX / TIA"||
+            Path.GetFileName(dualFixture.ExecutablePath)!="dotnet.exe"&&Path.GetFileName(dualFixture.ExecutablePath)!="Workbench.DesktopFixture.exe")
+            throw new ArgumentException("Second source must be the explicit own F0 fixture, never an inferred TIA window.");
+    }
 }
 using var firstLifetime=ownedScene?new ProbeCaptureLifetime(sharedGraphics!,captureTarget!,profile.Width,profile.Height,jpeg):null;
 using var secondLifetime=dual?new ProbeCaptureLifetime(sharedGraphics!,dualFixture!,profile.Width,profile.Height,jpeg):null;
 var builder = WebApplication.CreateBuilder();
-builder.WebHost.UseUrls("http://127.0.0.1:8091");
+builder.WebHost.UseUrls(loopbackOrigin);
 var app = builder.Build();
 var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
 var controlAdmission=new ProbeControlAdmission();
 var hostInstanceId = Guid.NewGuid();
+using var dualOverlay=dualNx?new DualNxOverlay(captureTarget!,dualFixture!):null;
+if(dualOverlay is not null)app.Lifetime.ApplicationStopping.Register(dualOverlay.Dispose);
 
 var buildIdentity = new[] { typeof(Program).Assembly.Location, typeof(H264Probe).Assembly.Location }.Select(path =>
 {
@@ -83,7 +120,7 @@ var buildIdentity = new[] { typeof(Program).Assembly.Location, typeof(H264Probe)
 app.Use(async (context, next) =>
 {
     if (context.Connection.RemoteIpAddress is not { } ip || !IPAddress.IsLoopback(ip)
-        || context.Request.Host.Value != "127.0.0.1:8091")
+        || context.Request.Host.Value != $"127.0.0.1:{port}")
     { context.Response.StatusCode = 403; return; }
     context.Response.Headers.CacheControl = "no-store";
     context.Response.Headers.XContentTypeOptions = "nosniff";
@@ -144,11 +181,39 @@ if(dual)
     app.MapGet("/",async context=>
     {
         context.Response.ContentType="text/html; charset=utf-8";
-        using var html=typeof(Program).Assembly.GetManifestResourceStream("Workbench.MediaProbe.dual.html")!;
+        using var html=typeof(Program).Assembly.GetManifestResourceStream(dualNx?"Workbench.MediaProbe.dual-nx.html":"Workbench.MediaProbe.dual.html")!;
         await html.CopyToAsync(context.Response.Body,context.RequestAborted);
     });
-    MapChannel("/nx",1,captureTarget,firstLifetime,nxScope,inputScope);
-    MapChannel("/f0",2,dualFixture,secondLifetime,null,"F0 loopback input only; dual NX comparison fixture, never TIA acceptance");
+    if(dualNx)
+    {
+        app.MapGet("/overlay/status",() => Results.Json(dualOverlay!.Status()));
+        app.MapPost("/overlay/start",async (HttpContext context) =>
+        {
+            if(context.Request.Headers.Origin != loopbackOrigin ||
+               context.Request.ContentType is null ||
+               !context.Request.ContentType.StartsWith("application/json",StringComparison.OrdinalIgnoreCase) ||
+               context.Request.ContentLength is not long length || length is < 1 or > 2048)
+            {
+                dualOverlay!.RecordError("请求来源、内容类型或长度校验失败；仅本机同源页面可启动跨栏控制。");
+                return Results.Json(new { error="仅本机同源页面可启动跨栏控制。" },statusCode:403);
+            }
+            try
+            {
+                var request=await context.Request.ReadFromJsonAsync<OverlayRequest>(cancellationToken:context.RequestAborted);
+                if(request is null)return Results.Json(new { error="跨栏布局为空。" },statusCode:400);
+                return Results.Json(new { message=dualOverlay!.Start(request) });
+            }
+            catch(Exception e) when(e is InvalidOperationException or ArgumentException or JsonException or System.ComponentModel.Win32Exception)
+            { dualOverlay!.RecordError(e.Message); return Results.Json(new { error=e.Message },statusCode:409); }
+        });
+        MapChannel("/left",1,captureTarget,firstLifetime,null,"Read-only first NX window; no input endpoint");
+        MapChannel("/right",2,dualFixture,secondLifetime,null,"Read-only second NX window; no input endpoint");
+    }
+    else
+    {
+        MapChannel("/nx",1,captureTarget,firstLifetime,nxScope,inputScope);
+        MapChannel("/f0",2,dualFixture,secondLifetime,null,"F0 loopback input only; dual NX comparison fixture, never TIA acceptance");
+    }
 }
 else MapChannel("",1,captureTarget,firstLifetime,nxScope,inputScope);
 await app.RunAsync();
@@ -164,13 +229,13 @@ routes.MapGet("/", async context =>
     await source.CopyToAsync(context.Response.Body, context.RequestAborted);
 });
 if(inputProbe is not null)routes.Map("/control",inputProbe.Serve);
-routes.MapGet("/health/live", () => Results.Json(new { mode = inputEnabled?(nxScope is null?"loopback-f0-input-experiment":"loopback-nx-copy-input-experiment"):"loopback-readonly-media-probe", inputEnabled, localConsole, inputTarget=nxScope is null?"F0":"NX", inputScope, partName=nxScope?.PartName, delayedSceneOutput, codec=jpeg?"jpeg":"h264", fps, profile, streamId, dual, source = sourceKind, ownedScene, busy = Volatile.Read(ref busy) != 0 }));
+routes.MapGet("/health/live", () => Results.Json(new { mode = inputEnabled?(nxScope is null?"loopback-f0-input-experiment":"loopback-nx-copy-input-experiment"):"loopback-readonly-media-probe", inputEnabled, localConsole, dualNx, inputTarget=dualNx||nxScope is not null?"NX":"F0", inputScope, partName=nxScope?.PartName, delayedSceneOutput, codec=jpeg?"jpeg":"h264", fps, profile, h264TargetBitrate=jpeg?(uint?)null:h264TargetBitrate, streamId, dual, source = sourceKind, ownedScene, busy = Volatile.Read(ref busy) != 0 }));
 routes.Map("/ws", async context =>
 {
-    if (!context.WebSockets.IsWebSocketRequest || context.Request.Headers.Origin != "http://127.0.0.1:8091")
+    if (!context.WebSockets.IsWebSocketRequest || context.Request.Headers.Origin != loopbackOrigin)
     { context.Response.StatusCode = 403; return; }
     bool observe=dual&&context.Request.Query["observe"]=="1";
-    bool continuous=localConsole && context.Request.Query["live"]=="1";
+    bool continuous=(localConsole||dualNx) && context.Request.Query["live"]=="1";
     int frameCount=18000;
     if (continuous ? context.Request.Query.Count!=1 || context.Request.Query["live"].Count!=1 :
         context.Request.Query.Count != (observe?2:1) || context.Request.Query["frames"].Count != 1
@@ -254,7 +319,7 @@ routes.Map("/ws", async context =>
                 Encoded,
                 cancellation.Token, width:profile.Width, height:profile.Height,fps:fps,sourceFactory: captureTarget is null ? null : ownedScene
                 ? RentScene
-                : () => windowSource = new WgcNv12Source(captureTarget, profile.Width, profile.Height),continuous:continuous,timings:h264Timings), cancellation.Token);
+                : () => windowSource = new WgcNv12Source(captureTarget, profile.Width, profile.Height),continuous:continuous,timings:h264Timings,targetBitrate:h264TargetBitrate), cancellation.Token);
             encodedDelay?.Complete();
             SendText(socket, new { type = "probeEnd", result }, cancellation.Token);
             var browser = await receive.WaitAsync(TimeSpan.FromSeconds(10));
@@ -266,7 +331,7 @@ routes.Map("/ws", async context =>
                 ? "Generated pattern through actual hardware MFT + WS + browser decoder; not NX acceptance"
                 : inputVideo is not null ? inputScope
                 : "Read-only WGC window + WS + browser decoder; no product input or NX workflow acceptance",
-                codec=jpeg?"jpeg":"h264",fps, profile, compatibilityReason=jpeg?"Explicit local comparison; not automatic fallback or hardware performance PASS":null,
+                codec=jpeg?"jpeg":"h264",fps, profile,h264TargetBitrate=jpeg?(uint?)null:h264TargetBitrate, compatibilityReason=jpeg?"Explicit local comparison; not automatic fallback or hardware performance PASS":null,
                 buildIdentity, encodedDelay, streamId,inputScope=inputVideo is not null?inputScope:null, diagnosticPart=nxScope?.PartName, inputDiagnostics=inputVideo?.Diagnostics, target = captureTarget, ownedScene, scenes = sceneSource?.SceneHistory,
                 capturedFrames = sceneSource?.CapturedFrames ?? windowSource?.CapturedFrames,
                 supersededFrames = sceneSource?.SupersededFrames ?? windowSource?.SupersededFrames,
@@ -286,7 +351,7 @@ routes.Map("/ws", async context =>
             else app.Logger.LogWarning("Media probe failed: {Type} {Error}", e.GetType().Name, e.Message);
             var failureDirectory=Path.GetFullPath("artifacts/verification/media-probe");Directory.CreateDirectory(failureDirectory);
             await using(var failureReport=new FileStream(Path.Combine(failureDirectory,$"{(userStopped?"stopped":"failed")}-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.json"),FileMode.CreateNew))
-                await JsonSerializer.SerializeAsync(failureReport,new {status=userStopped?"STOPPED":"FAIL",scope=userStopped?"User-ended local NX experiment; not workflow or latency PASS":"M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,fps,codec=jpeg?"jpeg":"h264",
+                await JsonSerializer.SerializeAsync(failureReport,new {status=userStopped?"STOPPED":"FAIL",scope=userStopped?"User-ended local NX experiment; not workflow or latency PASS":"M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,fps,codec=jpeg?"jpeg":"h264",h264TargetBitrate=jpeg?(uint?)null:h264TargetBitrate,
                     streamId,inputScope=inputVideo is not null?inputScope:null, diagnosticPart=nxScope?.PartName,inputDiagnostics=inputVideo?.Diagnostics,errorType=e.GetType().Name,error=e.Message,
                     errorHresult=$"0x{e.HResult:X8}",errorStack=e.ToString(),
                     framesSent=sequence,h264Timing=h264Timings?.Snapshot(),

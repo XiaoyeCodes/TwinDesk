@@ -39,6 +39,25 @@ public class OwnedWindowSceneTests
         var root=W(1);Assert.Single(OwnedWindowScene.Select(root,[root,W(2,8)]));
     }
     [Fact]
+    public void NxOwnerlessRibbonMenuIsSelectedButUnrelatedWindowsAreNot()
+    {
+        var root=W(1,x:100,y:100,width:900,height:600) with {ProcessName="ugraf",ThreadId=42,ZOrder=20};
+        var menu=W(2,x:700,y:180,width:120,height:220) with
+        {
+            ProcessName="ugraf",ThreadId=42,ZOrder=2,Title="",
+            ClassName="Afx:0000000140000000:20808:0000000000010003:0000000000000000:0000000000000000",
+            Style=0x96000040,ExtendedStyle=0x88
+        };
+        Assert.Equal([1L,2L],OwnedWindowScene.Select(root,[root,menu]).Select(w=>w.Handle));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {ThreadId=43}]));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {ZOrder=21}]));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {Title="Unrelated"}]));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {ClassName="Other"}]));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {ExtendedStyle=0x80}]));
+        Assert.Single(OwnedWindowScene.Select(root,[root,menu with {CaptureBounds=new(1200,180,120,220)}]));
+        Assert.Single(OwnedWindowScene.Select(root with {ProcessName="other"},[root with {ProcessName="other"},menu with {ProcessName="other"}]));
+    }
+    [Fact]
     public void ReusedProcessIdentityIsRejected()
     {
         var root=W(1);

@@ -2,7 +2,7 @@ namespace Workbench.Windows;
 
 public sealed record SceneNode(WindowInfo Window, WindowBounds Destination);
 
-/// <summary>Immutable, bounded layout for the locally selected root's same-process owned windows.</summary>
+/// <summary>Immutable, bounded layout for the locally selected root and verified application popups.</summary>
 public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNode> Nodes)
 {
     public const int MaximumNodes = 8;
@@ -26,6 +26,10 @@ public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNo
         {
             if (window.Handle == root.Handle || !window.Visible || window.Minimized || window.Cloaked
                 || window.ClassName.Equals("SysShadow", StringComparison.OrdinalIgnoreCase)) continue;
+            // NX 10's CMFCPopupMenu ribbon lists are ownerless WS_POPUP tool windows. Their
+            // class, UI thread, Z order and intersection tie them to the selected NX root;
+            // the same narrow predicate is used again by WindowsInputEnvironment.Check.
+            if (IsNxRibbonPopup(current, window)) { selected.Add(window); continue; }
             var visited = new HashSet<long> { window.Handle };
             long owner = window.Owner;
             while (owner != 0)
@@ -39,6 +43,24 @@ public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNo
         if (selected.Count > MaximumNodes) throw new InvalidDataException("Owned scene exceeds node budget; no nodes silently omitted.");
         // EnumWindows provides top-level order. Store only relative order, not unrelated windows' ranks.
         return Array.AsReadOnly(selected.OrderByDescending(w => w.ZOrder).ThenBy(w => w.Handle).ToArray());
+    }
+
+    private static bool IsNxRibbonPopup(WindowInfo root, WindowInfo window)
+    {
+        const long wsPopup = 0x80000000, wsExTopmost = 0x8, wsExToolWindow = 0x80;
+        static bool Intersects(WindowBounds a, WindowBounds b) => a.Width > 0 && a.Height > 0
+            && b.Width > 0 && b.Height > 0 && a.X < (long)b.X + b.Width && b.X < (long)a.X + a.Width
+            && a.Y < (long)b.Y + b.Height && b.Y < (long)a.Y + a.Height;
+        return root.ProcessName.Equals("ugraf", StringComparison.OrdinalIgnoreCase)
+            && window.Owner == 0 && window.Handle != root.Handle && window.ThreadId != 0
+            && window.ThreadId == root.ThreadId && window.ZOrder < root.ZOrder
+            && window.Title.Length == 0 && window.ClassName.StartsWith("Afx:", StringComparison.Ordinal)
+            && window.ClassName.Contains(":20808:", StringComparison.Ordinal)
+            && (window.Style & wsPopup) != 0
+            && (window.ExtendedStyle & (wsExTopmost | wsExToolWindow)) == (wsExTopmost | wsExToolWindow)
+            && window.CaptureBounds.Width < root.CaptureBounds.Width
+            && window.CaptureBounds.Height < root.CaptureBounds.Height
+            && Intersects(root.CaptureBounds, window.CaptureBounds);
     }
 
     public static OwnedWindowScene Arrange(IReadOnlyList<WindowInfo> backToFront)
@@ -69,7 +91,10 @@ public sealed record OwnedWindowScene(WindowBounds Bounds, IReadOnlyList<SceneNo
             && pair.First.Destination == pair.Second.Destination && pair.First.Window.Enabled == pair.Second.Window.Enabled
             && pair.First.Window.Owner == pair.Second.Window.Owner && pair.First.Window.Dpi == pair.Second.Window.Dpi
             && pair.First.Window.BindingGeneration == pair.Second.Window.BindingGeneration
-            && pair.First.Window.Layered == pair.Second.Window.Layered);
+            && pair.First.Window.Layered == pair.Second.Window.Layered
+            && pair.First.Window.ThreadId == pair.Second.Window.ThreadId
+            && pair.First.Window.Style == pair.Second.Window.Style
+            && pair.First.Window.ExtendedStyle == pair.Second.Window.ExtendedStyle);
 
     public static WindowBounds Letterbox(WindowBounds scene, int outputWidth, int outputHeight)
     {

@@ -74,6 +74,12 @@ public class AnnexBAccessUnitsTests
     public void InvalidProbeSettingsFailBeforeActivatingNativeEncoder(int frames, int width, int height) =>
         Assert.Throws<ArgumentOutOfRangeException>(() => H264Probe.Run(frames,true,_ => {},CancellationToken.None,width,height));
 
+    [Theory]
+    [InlineData(999_999u)]
+    [InlineData(20_000_001u)]
+    public void InvalidBitrateFailsBeforeActivatingNativeEncoder(uint bitrate) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => H264Probe.Run(30,true,_ => {},CancellationToken.None,targetBitrate:bitrate));
+
     [Fact]
     public void AlreadyCancelledProbeDoesNotActivateEncoder() =>
         Assert.Throws<OperationCanceledException>(() => H264Probe.Run(30,true,_ => {},new CancellationToken(true)));

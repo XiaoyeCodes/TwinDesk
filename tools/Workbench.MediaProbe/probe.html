@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><title>M1 H.264 实时链路探针</title>
-<style>body{font:16px system-ui;margin:24px;background:#12202c;color:#e8eef3}button,select{font:inherit;padding:8px;margin:4px}canvas{display:block;width:min(100%,1280px);height:auto;margin-top:16px;outline:1px solid #789}pre{white-space:pre-wrap}.note{color:#ffc56d}body.dual{font-size:12px;margin:12px}.dual h1{font-size:18px}.dual #sourceNote,.dual #inputPanel .note{display:none}.dual button,.dual select{padding:4px;margin:2px}.dual #inputStatus,.dual #status{min-height:2.5em}.dual textarea{width:100px;height:24px}.dual pre{font-size:10px}body.local-console #inputPanel,body.local-console #sourceNote,body.local-console #localPanel h2,body.local-console #delayFirst{display:none}.local-console h1{font-size:24px;margin:8px 0}.local-console #localPanel p{font-size:14px;margin:8px 0}.local-console #localPanel button{font-size:15px}body.local-console{margin:16px}</style>
+<style>body{font:16px system-ui;margin:24px;background:#12202c;color:#e8eef3}button,select{font:inherit;padding:8px;margin:4px}canvas{display:block;width:min(100%,1280px);height:auto;margin-top:16px;outline:1px solid #789}pre{white-space:pre-wrap}.note{color:#ffc56d}body.dual{font-size:12px;margin:12px}.dual h1{font-size:18px}.dual #sourceNote,.dual #inputPanel .note{display:none}.dual button,.dual select{padding:4px;margin:2px}.dual #inputStatus,.dual #status{min-height:2.5em}.dual textarea{width:100px;height:24px}.dual pre{font-size:10px}body.local-console #inputPanel,body.local-console #sourceNote,body.local-console #localPanel h2,body.local-console #delayFirst{display:none}.local-console h1{font-size:24px;margin:8px 0}.local-console #localPanel p{font-size:14px;margin:8px 0}.local-console #localPanel button{font-size:15px}body.local-console{margin:16px}body.local-console canvas{width:100%}body.dual-nx{margin:8px}body.dual-nx h1{font-size:14px;margin:4px 0}body.dual-nx #sourceNote,body.dual-nx #report,body.dual-nx label:has(#delayFirst),body.dual-nx #duration,body.dual-nx #start,body.dual-nx #stop{display:none}body.dual-nx canvas{width:100%}</style>
+<style>body.dual-nx{margin:0;background:#070b10;overflow:hidden}body.dual-nx>h1,body.dual-nx>#sourceNote,body.dual-nx>#duration,body.dual-nx>#start,body.dual-nx>#stop,body.dual-nx>#dualInputPanel,body.dual-nx>label,body.dual-nx>#inputPanel,body.dual-nx>#disconnectDiagnostic,body.dual-nx>#calibrationPanel,body.dual-nx>#localPanel,body.dual-nx>#status,body.dual-nx>#report{display:none!important}body.dual-nx #videoFrame{position:fixed!important;inset:0!important;width:100%!important;height:100%!important}body.dual-nx canvas{width:100%!important;height:100%!important;object-fit:fill;outline:0;margin:0!important}</style>
 <h1>M1 硬编 → WebSocket → WebCodecs</h1>
 <p class="note" id="sourceNote">仅本机媒体探针，正在读取源类型；不代表 UG / 博图工作流验收通过。</p>
 <select id="duration" aria-label="测试时长"><option value="300">10 秒</option><option value="1800">60 秒</option><option value="5400">3 分钟</option><option value="18000">10 分钟</option></select>
@@ -10,22 +11,29 @@
 <div id="inputPanel" hidden><p class="note" id="inputNote"></p><label>探针拖动方式 <select id="pointerMode" aria-label="探针拖动方式"><option value="native">原鼠标按钮</option><option value="middle">左键映射中键（真实中键拖动诊断）</option></select></label><p class="note">映射只影响视频内左键，使用后切回原鼠标按钮。更改方式会释放持键；此模式不代替第二台客户端物理中键验收。</p><textarea id="inputText" aria-label="提交文本" maxlength="4096"></textarea><button id="sendText">向当前原生文本框发送一次</button><p id="inputStatus">等待控制通道</p></div>
 <button id="disconnectDiagnostic" hidden>仅 F0：按下 Shift 后断开控制，验证服务端释放</button>
 <label id="calibrationPanel" hidden><input id="calibratePointer" type="checkbox">F0 点击像素测量：只在蓝色网格单击不同位置，不拖动；报告使用实际解码橙点，不绘制替代标记</label>
-<section id="localPanel" hidden><h2>同机双屏键鼠体验 · 实验版</h2><p>浏览器与 NX 分别放在两个屏幕。点击“连接并接管 NX”后，等待橙色十字出现即可操作。F12 或“停止”退出；不设体验时长。橙色十字是请求位置，实际效果以 NX 画面为准。</p><button id="startLocal" hidden>接管本机键鼠</button><button id="stopLocal" hidden>退出本机接管</button><p id="localStatus" role="status">未接管；实体键鼠仍正常使用</p><p id="latencyStatus">操作后显示输入往返统计</p></section><p id="status" role="status">尚未开始</p><div style="position:relative;width:min(100%,1280px)"><canvas id="canvas" width="1280" height="720" tabindex="0" style="margin-top:0"></canvas><span id="localCursor" hidden style="position:absolute;pointer-events:none;color:#ff6b00;font:bold 28px monospace;transform:translate(-50%,-50%);text-shadow:0 0 2px white" aria-hidden="true">＋</span></div><pre id="report"></pre>
+<section id="localPanel" hidden><h2>同机双屏键鼠体验 · 实验版</h2><p>浏览器与 NX 分别放在两个屏幕。点击“连接并接管 NX”后，等待橙色十字出现即可操作。F12 或“停止”退出；不设体验时长。橙色十字是请求位置，实际效果以 NX 画面为准。</p><button id="startLocal" hidden>接管本机键鼠</button><button id="stopLocal" hidden>退出本机接管</button><p id="localStatus" role="status">未接管；实体键鼠仍正常使用</p><p id="latencyStatus">操作后显示输入往返统计</p></section><p id="status" role="status">尚未开始</p><div id="videoFrame" style="position:relative;width:min(100%,1280px)"><canvas id="canvas" width="1280" height="720" tabindex="0" style="margin-top:0"></canvas><span id="localCursor" hidden style="position:absolute;pointer-events:none;color:#ff6b00;font:bold 28px monospace;transform:translate(-50%,-50%);text-shadow:0 0 2px white" aria-hidden="true">＋</span></div><pre id="report"></pre>
 <script src="/scene-timeline.js"></script><script src="/frame-presenter.js"></script><script src="/media-timings.js"></script><script src="/f0-pointer-calibration.js"></script><script src="/local-console.js"></script><script src="/input-client.js"></script><script src="/video-profile.js"></script><script src="/jpeg-decoder.js"></script>
 <script>
 'use strict';
 const status=document.querySelector('#status'),report=document.querySelector('#report');
 const start=document.querySelector('#start'),stop=document.querySelector('#stop');
 const canvas=document.querySelector('#canvas');let ctx=null,canvasMode=null;
-let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false,streamFps=30;
+let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false,readOnlyDualNx=false,streamFps=30;
+let lastParentStateAt=0;
+function parentState(state,run,force=false){
+  if(!readOnlyDualNx||window.parent===window)return;
+  const now=performance.now();if(!force&&now-lastParentStateAt<500)return;lastParentStateAt=now;
+  window.parent.postMessage({type:'nx-stream-state',streamId:expectedStream,state,presented:run?.presented??0},location.origin);
+}
 const probePath=location.pathname.endsWith('/')?location.pathname:location.pathname+'/';
 fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable');return r.json();}).then(info=>{
-  dualMode=info.dual===true;expectedStream=info.streamId;localConsoleMode=info.localConsole===true;
+  dualMode=info.dual===true;expectedStream=info.streamId;localConsoleMode=info.localConsole===true;readOnlyDualNx=info.dualNx===true;
   document.querySelector("#localPanel").hidden=!localConsoleMode;document.body.classList.toggle("local-console",localConsoleMode);
   if(localConsoleMode){document.querySelector("#duration").hidden=true;document.querySelector("#delayFirst").parentElement.hidden=true;}
   document.body.classList.toggle('dual',dualMode);
+  document.body.classList.toggle('dual-nx',readOnlyDualNx);
   if(!Number.isInteger(expectedStream)||expectedStream<1||expectedStream>2)throw Error('Invalid local stream identity');
-  document.querySelector('#dualInputPanel').hidden=!dualMode;
+  document.querySelector('#dualInputPanel').hidden=!dualMode||!info.inputEnabled;
   inputEnabled=info.inputEnabled;document.querySelector('#inputPanel').hidden=!inputEnabled;
   inputTarget=info.inputTarget;
   // Only the generated pattern and opt-in F0 pixel calibration read pixels back.
@@ -43,13 +51,17 @@ fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable
   if(![30,60].includes(streamFps)||selectedCodec==='jpeg'&&streamFps!==30)throw Error('Unsupported local frame rate');
   start.textContent=selectedCodec==='jpeg'?'开始 JPEG 兼容测试':'开始硬编测试';
   videoSize=probeVideoSize(info.profile?.width,info.profile?.height);
+  if(localConsoleMode)document.querySelector('#videoFrame').style.width=`min(100%,${videoSize.width}px)`;
   document.querySelector('h1').textContent=`M1 ${selectedCodec==='jpeg'?'JPEG 兼容':'H.264 硬编'} · ${videoSize.width}×${videoSize.height} · ${streamFps} FPS 配置`;
   document.querySelector('#sourceNote').textContent=info.source==='window'
     ? (info.ownedScene?'关联窗口 GPU 合成实验：同进程 owner 与透明混合；辅助进程识别尚未实现。':'本机真实窗口 → WGC / GPU / 硬编。窗口由本地启动参数固定；静止窗口不强制重复帧。')
     : '本机动态测试图，不采集桌面、不注入输入，不代表 UG / 博图验收通过。';
   if(inputEnabled)document.querySelector('#sourceNote').textContent=`${inputTarget} 本机输入联调：独立控制通道 + WGC 合成 + H.264；不是完整工作流验收。`;
   if(selectedCodec==='jpeg')document.querySelector('#sourceNote').textContent=`JPEG 兼容实验：WGC关联窗口合成、显式CPU读回、独立JPEG帧；${inputEnabled?inputTarget+'输入':'只读'}，不是H.264性能或真实工作流验收。`;
-  if(info.localConsole){document.querySelector("h1").textContent="本机 NX 键鼠体验（实验版）";document.title="本机 NX 浏览器控制 · 实验版";start.textContent="连接并接管 NX";} start.disabled=false;
+  if(info.localConsole){document.querySelector("h1").textContent=`本机 NX 键鼠体验 · ${videoSize.width}×${videoSize.height} / ${streamFps} FPS`;document.title="本机 NX 浏览器控制 · 实验版";start.textContent="连接并接管 NX";}
+  if(readOnlyDualNx){document.querySelector('h1').textContent=`NX 实例 ${expectedStream} · 实时只读画面`;document.title=`NX 实例 ${expectedStream} · 实时画面`;}
+  start.disabled=false;
+  if(readOnlyDualNx){parentState('connecting',null,true);queueMicrotask(()=>start.click());}
 }).catch(()=>{start.disabled=true;status.textContent='源状态读取失败';});
 start.onclick=async()=>{
   if(active||!videoSize)return;
@@ -58,7 +70,7 @@ start.onclick=async()=>{
   active=run;start.disabled=true;stop.disabled=false;report.textContent='';status.textContent='连接并协商真实编码器…';
   const fail=error=>{
     if(run.done)return;
-    run.done=true;status.textContent='失败：'+String(error);report.textContent=JSON.stringify({status:'FAIL',error:String(error),received:run.received,decoded:run.decoded,mediaTiming:run.timings.summary()},null,2);cleanup();
+    run.done=true;status.textContent='失败：'+String(error);report.textContent=JSON.stringify({status:'FAIL',error:String(error),received:run.received,decoded:run.decoded,mediaTiming:run.timings.summary()},null,2);parentState('error',run,true);cleanup();
   };
   const cleanup=()=>{
     run.input?.close();run.presenter?.close();
@@ -77,7 +89,7 @@ start.onclick=async()=>{
   run.cancel=()=>fail('用户停止；未记为通过');
   run.useInput=inputEnabled&&(!dualMode||document.querySelector('#dualInput').checked);
   if(run.useInput){try{run.input=await ProbeInputClient.open(canvas,fail,stopped);if(run.done){run.input.close();return;}}catch(error){fail(error);return;}}
-  const videoQuery=localConsoleMode?'live=1':`frames=${document.querySelector('#duration').value}${dualMode&&!run.useInput?'&observe=1':''}`;
+  const videoQuery=localConsoleMode||readOnlyDualNx?'live=1':`frames=${document.querySelector('#duration').value}${dualMode&&!run.useInput?'&observe=1':''}`;
   const socket=run.socket=new WebSocket(`ws://${location.host}${probePath}ws?${videoQuery}`);socket.binaryType='arraybuffer';
   socket.onmessage=event=>{const arrivedAt=performance.now();if(++run.pending>16){fail('Message processing backlog exceeded');return;}run.chain=run.chain.then(async()=>{
     if(run.done)return;
@@ -95,7 +107,7 @@ start.onclick=async()=>{
         run.presenter=new ProbeFramePresenter({timeline:run.timeline,error:fail,delayFirstMs:document.querySelector('#delayFirst').checked?3000:0,present:(frame,metadata)=>{
           if(run.done)return;
           if(!frame.image&&(frame.displayWidth!==run.width||frame.displayHeight!==run.height))throw Error('Decoded dimensions do not match stream');
-          const drawStart=performance.now();ctx.drawImage(frame.image??frame,0,0);run.timings.drawn(drawStart);run.presented++;run.input?.displayed(metadata.scene,metadata.sequence);
+          const drawStart=performance.now();ctx.drawImage(frame.image??frame,0,0);run.timings.drawn(drawStart);run.presented++;run.input?.displayed(metadata.scene,metadata.sequence);parentState('ready',run,run.presented===1);
           if(run.sceneDisplays.at(-1)?.version!==metadata.scene.version){
             if(run.sceneDisplays.length>=256){if(localConsoleMode){run.sceneDisplays.shift();run.sceneDisplaysDropped=(run.sceneDisplaysDropped??0)+1;}else throw Error('Scene evidence budget exceeded');}
             run.sceneDisplays.push({version:metadata.scene.version,nodeCount:metadata.scene.nodeCount,sequence:metadata.sequence});

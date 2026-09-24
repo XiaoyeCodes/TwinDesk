@@ -176,6 +176,17 @@ Computer Use 技能影响本轮真实 NX 验证：新建框索引/焦点不可�
 - Microsoft WebView2：https://learn.microsoft.com/en-us/microsoft-edge/webview2/landing/ 。网页嵌入原生应用，不能据此承诺 NX 原生窗口嵌入兼容。
 - Microsoft RDP：https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-allow-access 。Windows Home 不提供受支持的 RDP 主机能力；不自动升级或绕过授权。
 
+## LC-08 最小化捕获与独立输入桌面（2026-09-24）
+
+- [Microsoft WGC HWND 示例](https://github.com/microsoft/Windows.UI.Composition-Win32-Samples/blob/master/cpp/ScreenCaptureforHWND/README.md)：最小化窗口可枚举但不被采集；当前 NX 最小化实测见 [LC-08 可行性](./LC08_BACKGROUND_SESSION_FEASIBILITY.md)。
+- [Microsoft SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) 与 [Windows Desktops](https://learn.microsoft.com/en-us/windows/win32/winstation/desktops)：说明当前输入流及活动桌面的边界。隔离会话能否承载真实 NX 仍需实际工作流验证，不能由接口文档推出。
+- [Microsoft PrintWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow)：目标应用按 WM_PRINT 自行绘制到 DC；文档不保证 NX OpenGL 在最小化时继续渲染或能接收完整原生输入。
+- [Microsoft RDP 主机支持系统](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-supported-config)：当前 Windows 11 Home 不在支持列表，不使用绕过授权的补丁。
+- [Microsoft Hyper-V 安装](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/get-started/install-hyper-v)：Home 版不能安装 Hyper-V 角色；本机 hypervisor 标志不能当成已具备 VM 主机。
+- [西门子 NX 私有云 NVIDIA GRID 公告](https://blogs.sw.siemens.com/designcenter/siemens-press-release-siemens-nx-software-now-available-in-cost-effective-private-cloud-environment/)、[AMD MxGPU 虚拟桌面说明](https://blogs.sw.siemens.com/simcenter/run-nx-from-the-security-of-the-data-center-with-amd-multiuser-gpu/)及[Azure GPU 虚拟机方案](https://blogs.sw.siemens.com/designcenter/siemens-nx-on-the-cloud-with-microsoft-azure/)：仅证明特定虚拟 GPU/VDI 部署有厂商实例，不能外推为 NX 10 在当前 Intel Iris Xe/Home 本机 VM 上已受支持。
+- [Microsoft Windows 子会话](https://learn.microsoft.com/en-us/windows/win32/termserv/child-sessions)、[WTSIsChildSessionsEnabled](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsischildsessionsenabled)：区分独立输入会话与共享显示器；本机只读检查为 enabled=0，未调用会更改配置的启用接口。
+- [Duo](https://github.com/DuoStream/Duo)、[ChildStream](https://github.com/mattxslv/childstream)、[ParaDesk](https://github.com/sinpoce/ParaDesk)、[Streamio](https://github.com/cloudomate/streamio)：独立会话/虚拟显示候选的原项目说明。当前 Home 的适用条件及系统/驱动变更见 [LC-08 现成方案试验](./LC08_OPEN_SOURCE_TRIAL_20260924.md)。
+
 ## GitHub 源码调研补充（2026-09-04）
 
 见 [本机控制开源参考](./GITHUB_LOCAL_CONTROL_RESEARCH.md)。新增 Sunshine + 非官方 moonlight-web-stream 浏览器候选；读取 Sunshine/noVNC 输入处理源码，保留原始快照与哈希。只有调研证据，没有第三方 NX 实测结论。

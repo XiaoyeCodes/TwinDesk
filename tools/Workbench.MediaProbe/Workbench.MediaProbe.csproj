@@ -6,6 +6,7 @@
     <ProjectReference Include="../../src/Workbench.Windows/Workbench.Windows.csproj" />
     <EmbeddedResource Include="probe.html" />
     <EmbeddedResource Include="dual.html" />
+    <EmbeddedResource Include="dual-nx.html" />
     <EmbeddedResource Include="scene-timeline.js" />
     <EmbeddedResource Include="frame-presenter.js" />
     <EmbeddedResource Include="media-timings.js" />

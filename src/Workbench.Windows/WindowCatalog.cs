@@ -16,6 +16,9 @@ public sealed record WindowInfo(long Handle, int ProcessId, string ProcessName, 
     public int ZOrder { get; init; }
     public int SessionId { get; init; }
     public long BindingGeneration { get; init; }
+    public uint ThreadId { get; init; }
+    public long Style { get; init; }
+    public long ExtendedStyle { get; init; }
 }
 
 public static class WindowCatalog
@@ -100,6 +103,9 @@ public static class WindowCatalog
             && visibleRect.Right > visibleRect.Left && visibleRect.Bottom > visibleRect.Top)
             captureBounds = new(visibleRect.Left, visibleRect.Top, visibleRect.Right-visibleRect.Left, visibleRect.Bottom-visibleRect.Top);
         _ = NativeMethods.DwmGetWindowAttribute(hwnd, 14, out int cloaked, 4);
+        long style = NativeMethods.GetWindowLongPtrW(hwnd, -16).ToInt64();
+        long extendedStyle = NativeMethods.GetWindowLongPtrW(hwnd, -20).ToInt64();
+        uint threadId = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
         return new(hwnd, process.Id, process.ProcessName, path, title.ToString(), className.ToString(),
             new(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top),
             NativeMethods.GetDpiForWindow(hwnd), NativeMethods.IsIconic(hwnd), NativeMethods.GetWindow(hwnd, 4),
@@ -107,7 +113,8 @@ public static class WindowCatalog
             new(origin.X, origin.Y, client.Right-client.Left, client.Bottom-client.Top), NativeMethods.IsWindowVisible(hwnd))
         {
             CaptureBounds = captureBounds, Enabled = NativeMethods.IsWindowEnabled(hwnd), Cloaked = cloaked != 0,
-            Layered = (NativeMethods.GetWindowLongPtrW(hwnd, -20).ToInt64() & 0x80000) != 0, SessionId = WindowsInputEnvironment.ReadSessionId(process.Id)
+            Layered = (extendedStyle & 0x80000) != 0, SessionId = WindowsInputEnvironment.ReadSessionId(process.Id),
+            ThreadId = threadId, Style = style, ExtendedStyle = extendedStyle
         };
     }
 
