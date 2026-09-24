@@ -58,9 +58,17 @@ start.onclick=async()=>{
     if(run.decoder&&run.decoder.state!=='closed')run.decoder.close();
     run.socket?.close();if(active===run){active=null;start.disabled=false;stop.disabled=true;}
   };
+  const stopped=reason=>{
+    if(run.done)return;
+    run.done=true;
+    status.textContent='已退出本机接管：F12；实体键鼠已恢复。真实 NX 工作流和端到端延迟仍需单独验收。';
+    report.textContent=JSON.stringify({status:'STOPPED',reason,scope:'User-ended local NX experiment; not workflow or latency PASS',
+      received:run.received,decoded:run.decoded,presented:run.presented,input:run.input?.summary(),mediaTiming:run.timings.summary()},null,2);
+    cleanup();
+  };
   run.cancel=()=>fail('用户停止；未记为通过');
   run.useInput=inputEnabled&&(!dualMode||document.querySelector('#dualInput').checked);
-  if(run.useInput){try{run.input=await ProbeInputClient.open(canvas,fail);if(run.done){run.input.close();return;}}catch(error){fail(error);return;}}
+  if(run.useInput){try{run.input=await ProbeInputClient.open(canvas,fail,stopped);if(run.done){run.input.close();return;}}catch(error){fail(error);return;}}
   const videoQuery=localConsoleMode?'live=1':`frames=${document.querySelector('#duration').value}${dualMode&&!run.useInput?'&observe=1':''}`;
   const socket=run.socket=new WebSocket(`ws://${location.host}${probePath}ws?${videoQuery}`);socket.binaryType='arraybuffer';
   socket.onmessage=event=>{const arrivedAt=performance.now();if(++run.pending>16){fail('Message processing backlog exceeded');return;}run.chain=run.chain.then(async()=>{

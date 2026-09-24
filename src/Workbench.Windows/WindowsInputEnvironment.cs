@@ -12,6 +12,8 @@ namespace Workbench.Windows;
 public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool> verifyLiveBinding,
     Func<WindowInfo,bool>? allowDiagnosticRoot=null) : INativeInputEnvironment
 {
+    public LatencyWindow IdentityChecks {get;}=new();
+    public LatencyWindow SceneDiscovery {get;}=new();
     public NativeInputCheck Check(OwnedWindowScene scene,ScreenPoint? point)
     {
         var desktop=new WindowBounds(GetSystemMetrics(76),GetSystemMetrics(77),GetSystemMetrics(78),GetSystemMetrics(79));
@@ -22,12 +24,21 @@ public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool
             if(!AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(),-4))return Deny("DPI_CONTEXT_UNVERIFIED");
             using var current=Process.GetCurrentProcess();
             using var target=Process.GetProcessById(root.ProcessId);
-            if(target.StartTime.ToUniversalTime()!=root.ProcessStartedAtUtc || target.SessionId!=root.SessionId
-                || target.SessionId!=current.SessionId || string.IsNullOrEmpty(root.ExecutablePath)
-                || !string.Equals(target.MainModule?.FileName,root.ExecutablePath,StringComparison.OrdinalIgnoreCase))return Deny("TARGET_IDENTITY_CHANGED");
-            if(!InteractiveDesktop())return Deny("DESKTOP_UNAVAILABLE");
-            if(Integrity(target.Handle)>Integrity(current.Handle))return Deny("INPUT_PERMISSION_MISMATCH");
-            var windows=WindowCatalog.Find(root.ProcessName);
+            long identityStart=Stopwatch.GetTimestamp();
+            try
+            {
+                int targetSession=ReadSessionId(root.ProcessId);
+                if(target.StartTime.ToUniversalTime()!=root.ProcessStartedAtUtc || targetSession!=root.SessionId
+                    || targetSession!=ReadSessionId(current.Id) || string.IsNullOrEmpty(root.ExecutablePath)
+                    || !string.Equals(target.MainModule?.FileName,root.ExecutablePath,StringComparison.OrdinalIgnoreCase))return Deny("TARGET_IDENTITY_CHANGED");
+                if(!InteractiveDesktop())return Deny("DESKTOP_UNAVAILABLE");
+                if(Integrity(target.Handle)>Integrity(current.Handle))return Deny("INPUT_PERMISSION_MISMATCH");
+            }
+            finally{IdentityChecks.Record(Stopwatch.GetElapsedTime(identityStart).TotalMilliseconds);}
+            long discoveryStart=Stopwatch.GetTimestamp();
+            IReadOnlyList<WindowInfo> windows;
+            try{windows=WindowCatalog.Find(target);}
+            finally{SceneDiscovery.Record(Stopwatch.GetElapsedTime(discoveryStart).TotalMilliseconds);}
             var currentRoot=windows.SingleOrDefault(w=>OwnedWindowScene.SameIdentity(root,w));
             if(allowDiagnosticRoot is not null && (currentRoot is null || !allowDiagnosticRoot(currentRoot)))
                 return Deny("DIAGNOSTIC_TARGET_CHANGED");
@@ -88,6 +99,14 @@ public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool
         }
         finally { CloseDesktop(desktop); }
     }
+    // Kernel32 asks the OS for the current mapping on every call. Process.SessionId on a fresh
+    // Process object takes several milliseconds here; this retains an immediate check without
+    // caching a PID or assuming the session cannot change through process replacement.
+    public static int ReadSessionId(int processId)
+    {
+        if(processId<=0 || !ProcessIdToSessionId((uint)processId,out uint session))throw new Win32Exception();
+        return checked((int)session);
+    }
     private static int Integrity(nint process)
     {
         if(!OpenProcessToken(process,8,out var token))throw new Win32Exception();
@@ -121,6 +140,7 @@ public sealed class WindowsInputEnvironment(WindowInfo root,Func<WindowInfo,bool
     [DllImport("user32.dll")] private static extern nint GetThreadDesktop(uint thread);
     [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool GetUserObjectInformationW(nint handle,int index,StringBuilder value,uint length,out uint needed);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern bool ProcessIdToSessionId(uint processId,out uint sessionId);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
     [DllImport("advapi32.dll",SetLastError=true)] private static extern bool OpenProcessToken(nint process,uint access,out nint token);
     [DllImport("advapi32.dll",SetLastError=true)] private static extern bool GetTokenInformation(nint token,int kind,nint data,uint length,out uint needed);

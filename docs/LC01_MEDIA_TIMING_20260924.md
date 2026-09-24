@@ -1,5 +1,7 @@
 # LC-01 分段计时与有限媒体实测（2026-09-24）
 
+后续同日真实 NX 实体键鼠与 LC-04 候选优化见 [本机交互记录](./LC01_NX_INTERACTION_20260924.md)；下述“NX 未测”仅指本文写作时点。
+
 状态：**IN_PROGRESS**。本轮补齐原生输入 SendInput 调用耗时、WGC 源轮询、MFT 输入调用与输入到编码输出驻留，以及浏览器接包到解码回调、Canvas drawImage 调用耗时。所有分布只保留最近 256 条样本并报告总数；不同进程时钟不相减。没有引入跨进程同步时钟或把分段之和称为端到端延迟。
 
 浏览器接包时间在 WebSocket onmessage 入口记录，因此 receiveToDecodeMs 包含本页消息处理队列和浏览器解码等待。encoderResidenceMs 从 MFT ProcessInput 前到匹配时间戳编码输出被读取，包含编码器内部排队；不等同纯 GPU 执行时间。SourcePollMs 包含无新帧的 WGC 轮询。drawCallMs 只计同步 drawImage 调用，**不包括浏览器合成/显示器扫描**。inputDiagnostics.nativeSends 只计传输调用，成功返回也不证明 NX 已响应。帧时间戳仅用于同流关联，不跨主机/网页时钟计算延迟。

@@ -6,16 +6,49 @@ WindowCatalog.SetDpiAwareness();
 var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 try
 {
-    if(args.Length==3 && args[0]=="--benchmark-catalog" && args[1]=="--process")
+    if(args.Length==3 && args[0]=="--benchmark-identity" && args[1]=="--process")
     {
-        var values=new List<double>();int count=0;
+        var processes=System.Diagnostics.Process.GetProcessesByName(args[2]);
+        if(processes.Length!=1){foreach(var process in processes)process.Dispose();throw new InvalidOperationException("Identity benchmark requires exactly one matching live process.");}
+        int pid=processes[0].Id;foreach(var process in processes)process.Dispose();
+        var startTimes=new List<double>();var sessions=new List<double>();var directSessions=new List<double>();var modules=new List<double>();var desktops=new List<double>();
         for(int i=0;i<210;i++)
         {
-            var watch=System.Diagnostics.Stopwatch.StartNew();count=WindowCatalog.Find(args[2]).Count;
-            if(i>=10)values.Add(watch.Elapsed.TotalMilliseconds);
+            using var process=System.Diagnostics.Process.GetProcessById(pid);
+            var watch=System.Diagnostics.Stopwatch.StartNew();_ = process.StartTime.ToUniversalTime();double startMs=watch.Elapsed.TotalMilliseconds;
+            watch.Restart();int processSession=process.SessionId;double sessionMs=watch.Elapsed.TotalMilliseconds;
+            watch.Restart();int directSession=WindowsInputEnvironment.ReadSessionId(pid);double directSessionMs=watch.Elapsed.TotalMilliseconds;
+            if(processSession!=directSession)throw new InvalidDataException("Direct and Process session identity differ.");
+            watch.Restart();_ = process.MainModule?.FileName;double moduleMs=watch.Elapsed.TotalMilliseconds;
+            watch.Restart();_ = WindowsInputEnvironment.InteractiveDesktop();double desktopMs=watch.Elapsed.TotalMilliseconds;
+            if(i>=10){startTimes.Add(startMs);sessions.Add(sessionMs);directSessions.Add(directSessionMs);modules.Add(moduleMs);desktops.Add(desktopMs);}
         }
-        values.Sort();await PrintReportAsync(new {time=DateTimeOffset.Now,scope="Read-only catalog calls; NOT end-to-end input latency",iterations=200,count,
-            medianMs=values[100],p95Ms=values[189],maxMs=values[^1],meanMs=values.Average(),
+        static object Dist(List<double> samples){samples.Sort();return new {p50Ms=samples[99],p95Ms=samples[189],maxMs=samples[^1]};}
+        await PrintReportAsync(new {time=DateTimeOffset.Now,scope="Read-only metadata timing in fresh Process objects; no target integrity token or native input; NOT end-to-end latency",
+            iterations=200,processStart=Dist(startTimes),session=Dist(sessions),directSession=Dist(directSessions),mainModule=Dist(modules),interactiveDesktop=Dist(desktops)});
+        return 0;
+    }
+    if(args.Length==3 && args[0]=="--benchmark-catalog" && args[1]=="--process")
+    {
+        var processes=System.Diagnostics.Process.GetProcessesByName(args[2]);
+        if(processes.Length!=1){foreach(var process in processes)process.Dispose();throw new InvalidOperationException("Catalog benchmark requires exactly one matching live process.");}
+        using var benchmarkProcess=processes[0];
+        var oldValues=new List<double>();var targetValues=new List<double>();int count=0;
+        for(int i=0;i<210;i++)
+        {
+            var watch=System.Diagnostics.Stopwatch.StartNew();var byName=WindowCatalog.Find(args[2]);
+            double oldMs=watch.Elapsed.TotalMilliseconds;
+            using var fresh=System.Diagnostics.Process.GetProcessById(benchmarkProcess.Id);
+            watch.Restart();var byTarget=WindowCatalog.Find(fresh);
+            double targetMs=watch.Elapsed.TotalMilliseconds;
+            var expected=byName.Where(w=>w.ProcessId==benchmarkProcess.Id).ToArray();
+            if(!expected.SequenceEqual(byTarget))throw new InvalidDataException("Catalog routes did not return identical target windows.");
+            count=byTarget.Count;
+            if(i>=10){oldValues.Add(oldMs);targetValues.Add(targetMs);}
+        }
+        static object Summary(List<double> values){values.Sort();return new {medianMs=values[100],p95Ms=values[189],maxMs=values[^1],meanMs=values.Average()};}
+        await PrintReportAsync(new {time=DateTimeOffset.Now,scope="Read-only exact-window catalog comparison; NOT end-to-end input latency",iterations=200,count,
+            byName=Summary(oldValues),byVerifiedProcess=Summary(targetValues),
             binarySha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(typeof(WindowCatalog).Assembly.Location)))});
         return 0;
     }

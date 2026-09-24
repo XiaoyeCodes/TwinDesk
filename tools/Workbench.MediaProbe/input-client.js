@@ -39,13 +39,13 @@ class InputMoveQueue {
 }
 // M1 probe input adapter. No hidden retries, no clipboard, no remote HWND/absolute desktop coordinates.
 class ProbeInputClient {
-  static async open(canvas, fail) {
-    const client = new ProbeInputClient(canvas, fail);
+  static async open(canvas, fail, stopped) {
+    const client = new ProbeInputClient(canvas, fail, stopped);
     try { await client.hello; } catch(error) { client.close(); throw error; }
     return client;
   }
-  constructor(canvas, fail) {
-    this.canvas=canvas; this.fail=fail; this.sequence=0; this.frame=0; this.scene=null; this.ready=false;
+  constructor(canvas, fail, stopped) {
+    this.canvas=canvas; this.fail=fail; this.stopped=stopped; this.sequence=0; this.frame=0; this.scene=null; this.ready=false;
     this.keys=new Set(); this.buttons=new Set(); this.pointerButtons=new Map(); this.results=[]; this.submitted=0; this.accepted=0; this.rejected=0;
     this.listeners=[]; this.closed=false;
     this.pendingTimes=new Map();this.roundTrips=[];
@@ -79,7 +79,9 @@ class ProbeInputClient {
             if(message.status.session.reason==='SCENE_UPDATING')this.release();
           } else if(message.type==='inputTerminated') {
             this.ready=false;this.terminalReason=`${message.reason} / ${message.nativeCode}`;
-            this.fail(`输入已停止：${this.terminalReason}；未重放操作`);
+            if(this.identity?.localConsole&&message.reason==='LOCAL_F12_STOPPED'&&this.stopped)
+              this.stopped(message.reason);
+            else this.fail(`输入已停止：${this.terminalReason}；未重放操作`);
           } else if(message.type==='inputResult') {
             const sentAt=this.pendingTimes.get(message.sequence);this.pendingTimes.delete(message.sequence);
             if(sentAt!==undefined){

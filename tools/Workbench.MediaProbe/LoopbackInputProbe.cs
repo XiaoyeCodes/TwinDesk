@@ -52,6 +52,7 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
         public void BeforeFrame(ProbeSceneConfig? scene,uint sequence)=>controller.BeforeFrame(scene,sequence);
         public void Stop()=>controller.Executor.Invalidate("VIDEO_DISCONNECTED");
         public object Diagnostics=>controller.Diagnostics;
+        public bool NormalLocalStop=>controller.NormalLocalStop;
     }
 
     internal sealed class Controller
@@ -81,9 +82,11 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
         private readonly Queue<object> outcomes=new();
         public BoundedInputExecutor Executor {get;}
         public bool VideoClaimed;
+        public bool NormalLocalStop=>localConsole && localBridge?.Reason=="LOCAL_F12_STOPPED";
         public object Diagnostics { get {lock(outcomes)return new {status=Executor.Status,nativeCode=backend.LastCode,recent=outcomes.ToArray(),
             localArmCode,localActivationAccepted,dispatchCount,meanDispatchMs=dispatchCount==0?0:dispatchTotalMs/dispatchCount,dispatchMaximumMs,
             queueWait=Executor.QueueWait.Snapshot(),nativeDispatch=Executor.DispatchTime.Snapshot(),nativeChecks=backend.NativeChecks.Snapshot(),nativeSends=backend.NativeSends.Snapshot(),
+            identityChecks=localEnvironment.IdentityChecks.Snapshot(),sceneDiscovery=localEnvironment.SceneDiscovery.Snapshot(),
             localConsole=localBridge is null?null:new {localBridge.Active,localBridge.Reason,localBridge.PhysicalEvents,localBridge.IgnoredInjected,localBridge.QueueDiagnostics}};} }
         public Controller(WindowInfo root,Guid host,string scope,Func<WindowInfo,bool>? allowDiagnosticRoot,uint streamId,bool localConsole)
         {
@@ -92,7 +95,7 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
             this.streamId=streamId;
             this.localConsole=localConsole;
             localEnvironment=new(root,w=>Volatile.Read(ref source)?.InputBindings.Verify(w)==true,allowDiagnosticRoot);
-            backend=new(new WindowsInputEnvironment(root,w=>Volatile.Read(ref source)?.InputBindings.Verify(w)==true,allowDiagnosticRoot),new WindowsInputTransport());
+            backend=new(localEnvironment,new WindowsInputTransport());
             Executor=new(lease,root,backend);
         }
         public void Bind(WgcOwnedNv12Source capture)

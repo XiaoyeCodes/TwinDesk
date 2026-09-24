@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using Workbench.Windows;
 using Xunit;
 
@@ -23,6 +24,12 @@ public class NativeInputTests
         Assert.Equal(8,IntPtr.Size);Assert.Equal(40,Marshal.SizeOf<NativeInputEvent>());
         Assert.Equal(8,Marshal.OffsetOf<NativeInputEvent>(nameof(NativeInputEvent.Data)).ToInt32());
         Assert.Equal(24,Marshal.SizeOf<NativeKeyboardInput>());Assert.Equal(32,Marshal.SizeOf<NativeMouseInput>());
+    }
+    [Fact] public void DirectSessionLookupMatchesFreshProcessMetadata()
+    {
+        using var current=Process.GetCurrentProcess();
+        Assert.Equal(current.SessionId,WindowsInputEnvironment.ReadSessionId(current.Id));
+        Assert.ThrowsAny<Exception>(()=>WindowsInputEnvironment.ReadSessionId(0));
     }
     [Theory] [InlineData("ControlLeft",8u)] [InlineData("ControlRight",9u)] [InlineData("NumpadEnter",9u)]
     public void KeyboardPackingUsesScanCodeAndExtendedFlag(string code,uint flags)

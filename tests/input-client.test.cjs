@@ -22,15 +22,15 @@ function fixture(localConsole=false){
   }
   const elements=new Map(['#inputStatus','#sendText','#inputText','#pointerMode','#disconnectDiagnostic'].map(id=>[id,new Element()]));
   const document=new Element();document.querySelector=id=>elements.get(id);
-  const canvas=new Element(),window=new Element(),errors=[];
+  const canvas=new Element(),window=new Element(),errors=[],stops=[];
   const context=vm.createContext({WebSocket:Socket,location:{host:'127.0.0.1:8091'},document,window,
     setTimeout:()=>1,clearTimeout(){},setInterval:()=>2,clearInterval(){}});
   vm.runInContext(fs.readFileSync('tools/Workbench.MediaProbe/input-client.js','utf8')+'\nthis.Client=ProbeInputClient;',context);
-  const client=new context.Client(canvas,error=>errors.push(String(error)));
+  const client=new context.Client(canvas,error=>errors.push(String(error)),reason=>stops.push(reason));
   Socket.last.receive({type:'inputHello',lease:{id:'test',generation:1},hostInstanceId:'host',streamId:1,epoch:1,localConsole});
   const scene={version:1,width:1280,height:720,contentRect:{x:128,y:0,width:1024,height:720}};
   function ready(){client.displayed(scene,1);Socket.last.receive({type:'displayAck',accepted:true,stamp:client.stamp(),frame:1});}
-  return {client,canvas,elements,document,window,socket:Socket.last,scene,errors,ready};
+  return {client,canvas,elements,document,window,socket:Socket.last,scene,errors,stops,ready};
 }
 
 test('negotiated local mode coalesces only unsent moves and flushes position before a button',()=>{
@@ -111,6 +111,12 @@ test('terminal control message and close preserve the actual server reason',()=>
   assert.equal(f.client.ready,false);assert.match(f.errors[0],/FOCUS_DENIED/);
   f.socket.onclose({code:1008,reason:'INPUT_STOPPED'});
   assert.match(f.errors.at(-1),/FOCUS_DENIED/);assert.equal(f.client.submitted,0);f.client.close();
+});
+test('F12 in local console ends the experiment without a false failure',()=>{
+  const f=fixture(true);f.ready();
+  f.socket.receive({type:'inputTerminated',reason:'LOCAL_F12_STOPPED',nativeCode:'SUBMITTED_NOT_APPLICATION_ACK'});
+  assert.deepEqual(f.stops,['LOCAL_F12_STOPPED']);assert.equal(f.errors.length,0);
+  f.client.close();assert.equal(f.errors.length,0);
 });
 test('another stream display acknowledgment cannot enable this canvas',()=>{
   const f=fixture();f.client.displayed(f.scene,1);

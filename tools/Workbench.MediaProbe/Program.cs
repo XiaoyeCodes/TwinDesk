@@ -260,10 +260,12 @@ routes.Map("/ws", async context =>
         }
         catch (Exception e)
         {
-            app.Logger.LogWarning("Media probe failed: {Type} {Error}", e.GetType().Name, e.Message);
+            bool userStopped=continuous && e is OperationCanceledException && inputVideo?.NormalLocalStop==true;
+            if(userStopped)app.Logger.LogInformation("Local NX experiment ended with F12 after {Frames} frames", sequence);
+            else app.Logger.LogWarning("Media probe failed: {Type} {Error}", e.GetType().Name, e.Message);
             var failureDirectory=Path.GetFullPath("artifacts/verification/media-probe");Directory.CreateDirectory(failureDirectory);
-            await using(var failureReport=new FileStream(Path.Combine(failureDirectory,$"failed-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.json"),FileMode.CreateNew))
-                await JsonSerializer.SerializeAsync(failureReport,new {status="FAIL",scope="M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,codec=jpeg?"jpeg":"h264",
+            await using(var failureReport=new FileStream(Path.Combine(failureDirectory,$"{(userStopped?"stopped":"failed")}-{DateTime.Now:yyyyMMdd-HHmmss-fffffff}.json"),FileMode.CreateNew))
+                await JsonSerializer.SerializeAsync(failureReport,new {status=userStopped?"STOPPED":"FAIL",scope=userStopped?"User-ended local NX experiment; not workflow or latency PASS":"M1 probe attempt; not workflow acceptance",buildIdentity,inputEnabled,profile,codec=jpeg?"jpeg":"h264",
                     streamId,inputScope=inputVideo is not null?inputScope:null, diagnosticPart=nxScope?.PartName,inputDiagnostics=inputVideo?.Diagnostics,errorType=e.GetType().Name,error=e.Message,
                     errorHresult=$"0x{e.HResult:X8}",errorStack=e.ToString(),
                     framesSent=sequence,scenes=sceneSource?.SceneHistory,

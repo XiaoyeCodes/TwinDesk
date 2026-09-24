@@ -20,6 +20,28 @@ public sealed record WindowInfo(long Handle, int ProcessId, string ProcessName, 
 
 public static class WindowCatalog
 {
+    // The input guard has already opened and verified the target process. Avoid enumerating
+    // every process with the same name for each native event, but reject a process that exits
+    // while its windows are being described (including a possible PID reuse).
+    public static IReadOnlyList<WindowInfo> Find(Process process)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        var result=new List<WindowInfo>();
+        int pid=process.Id,zOrder=0;
+        NativeMethods.EnumWindows((hwnd,_)=>
+        {
+            int rank=zOrder++;
+            if(!NativeMethods.IsWindowVisible(hwnd))return true;
+            NativeMethods.GetWindowThreadProcessId(hwnd,out uint ownerPid);
+            if(ownerPid!=(uint)pid)return true;
+            try{result.Add(Describe(hwnd,process) with {ZOrder=rank});}
+            catch(Exception e) when(e is ArgumentException or System.ComponentModel.Win32Exception or InvalidOperationException){}
+            return true;
+        },0);
+        if(process.HasExited)throw new InvalidOperationException("Target process exited during window discovery.");
+        return result;
+    }
+
     public static IReadOnlyList<WindowInfo> Find(string processName)
     {
         var result = new List<WindowInfo>();
@@ -85,7 +107,7 @@ public static class WindowCatalog
             new(origin.X, origin.Y, client.Right-client.Left, client.Bottom-client.Top), NativeMethods.IsWindowVisible(hwnd))
         {
             CaptureBounds = captureBounds, Enabled = NativeMethods.IsWindowEnabled(hwnd), Cloaked = cloaked != 0,
-            Layered = (NativeMethods.GetWindowLongPtrW(hwnd, -20).ToInt64() & 0x80000) != 0, SessionId = process.SessionId
+            Layered = (NativeMethods.GetWindowLongPtrW(hwnd, -20).ToInt64() & 0x80000) != 0, SessionId = WindowsInputEnvironment.ReadSessionId(process.Id)
         };
     }
 
