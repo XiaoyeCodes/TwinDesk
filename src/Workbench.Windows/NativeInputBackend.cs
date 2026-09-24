@@ -13,6 +13,15 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
     public string? ReadinessCode=>LastCode;
     public bool HasPendingTransient=>unicodePending.Count!=0;
     public LatencyWindow NativeChecks {get;}=new();
+    // Time spent inside SendInput's transport call, including release-only sends.
+    // A successful return still does not prove the application handled the event.
+    public LatencyWindow NativeSends {get;}=new();
+    private uint Send(NativeInputEvent[] events)
+    {
+        long start=System.Diagnostics.Stopwatch.GetTimestamp();
+        try{return transport.Send(events);}
+        finally{NativeSends.Record(System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);}
+    }
     private NativeInputCheck Check(OwnedWindowScene scene,ScreenPoint? point)
     {
         long start=System.Diagnostics.Stopwatch.GetTimestamp();
@@ -50,7 +59,7 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
             case InputKind.Move: break;
             default:return false;
         }
-        bool complete=transport.Send(events.ToArray())==events.Count;
+        bool complete=Send(events.ToArray())==events.Count;
         LastCode=complete?"SUBMITTED_NOT_APPLICATION_ACK":"NATIVE_PARTIAL_OR_FAILED";
         return complete;
     }
@@ -66,7 +75,7 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
             foreach(char unit in units)unicodePending.Add(unit); // Before call: partial/throwing sends may have pressed VK_PACKET.
             try
             {
-                if(transport.Send(events)!=events.Length){LastCode="UNICODE_PARTIAL_OR_FAILED";return false;}
+                if(Send(events)!=events.Length){LastCode="UNICODE_PARTIAL_OR_FAILED";return false;}
                 unicodePending.Clear();
             }
             catch(Exception){LastCode="UNICODE_SEND_EXCEPTION";throw;}
@@ -81,12 +90,12 @@ public sealed class NativeInputBackend(INativeInputEnvironment environment,INati
         // Release individually so success is known for each transient unit. Never send a move or a new down here.
         foreach(ushort unit in unicodePending.ToArray())
         {
-            try { if(transport.Send([NativeInputEvent.Key(unit,6)])==1)unicodePending.Remove(unit);else success=false; }
+            try { if(Send([NativeInputEvent.Key(unit,6)])==1)unicodePending.Remove(unit);else success=false; }
             catch(Exception){success=false;}
         }
         foreach(var input in held)
         {
-            try { if(transport.Send([NativeInputEvents.Release(input)])!=1)success=false; }
+            try { if(Send([NativeInputEvents.Release(input)])!=1)success=false; }
             catch(Exception){success=false;}
         }
         if(!success)LastCode="NATIVE_RELEASE_FAILED";

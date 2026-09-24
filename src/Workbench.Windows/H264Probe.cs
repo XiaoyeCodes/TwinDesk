@@ -10,7 +10,14 @@ public sealed record EncodedAccessUnit(long TimestampUs, bool KeyFrame, byte[] D
 }
 public sealed record H264ProbeResult(string Source, string Encoder, bool Hardware, bool Asynchronous,
     int Width, int Height, int Fps, int InputFrames, int OutputFrames, long OutputBytes,
-    double DurationSeconds, double FirstOutputMs, string CodecString, string Format, int OutputTypeChanges, DateTimeOffset RecordedAt);
+    double DurationSeconds, double FirstOutputMs, string CodecString, string Format, int OutputTypeChanges, DateTimeOffset RecordedAt)
+{
+    // Independent intervals in this process. Residence begins at ProcessInput and ends when
+    // the matching encoded access unit is read; it includes MFT queueing, not only GPU work.
+    public LatencySummary SourcePollMs {get;init;}=new(0,0,0,0,0);
+    public LatencySummary InputSubmitMs {get;init;}=new(0,0,0,0,0);
+    public LatencySummary EncoderResidenceMs {get;init;}=new(0,0,0,0,0);
+}
 
 /// <summary>Finite MFT experiment with an explicit generated NV12 or live GPU source.</summary>
 public static class H264Probe
@@ -69,6 +76,10 @@ public static class H264Probe
                 using var events = isAsync ? transform.QueryInterface<IMFMediaEventGenerator>() : null;
                 var normalizer = new AnnexBAccessUnits();
                 var scenes = new FrameSceneLedger(frameSource is null ? 256 : 8);
+                var sourcePoll=new LatencyWindow();
+                var inputSubmit=new LatencyWindow();
+                var encoderResidence=new LatencyWindow();
+                var submittedAt=new Dictionary<long,long>();
                 var watch = Stopwatch.StartNew();
                 var lastProgress = watch.Elapsed;
                 int sent = 0, received = 0, credits = 0, outputTypeChanges = 0;
@@ -122,10 +133,14 @@ public static class H264Probe
                         && watch.Elapsed.TotalSeconds >= (frameSource is null ? (double)sent / fps : nextSourcePoll))
                     {
                         nextSourcePoll = watch.Elapsed.TotalSeconds + 1.0 / fps;
-                        using var sample = frameSource is null ? GeneratedSample() : frameSource.TryGetSample();
+                        using var sample = frameSource is null ? GeneratedSample() : PollSource();
                         if (sample is null) continue;
                         scenes.Add(sample.SampleTime, frameSource?.LastSampleScene);
-                        transform.ProcessInput(inputIds[0], sample, 0);
+                        if(submittedAt.Count>=256 || !submittedAt.TryAdd(sample.SampleTime,Stopwatch.GetTimestamp()))
+                            throw new InvalidDataException("Encoder timing ledger overflow or duplicate timestamp.");
+                        long submitStart=Stopwatch.GetTimestamp();
+                        try{transform.ProcessInput(inputIds[0], sample, 0);}
+                        finally{inputSubmit.Record(Stopwatch.GetElapsedTime(submitStart).TotalMilliseconds);}
                         sent++;
                         if (isAsync) credits--;
                         lastProgress = watch.Elapsed;
@@ -138,10 +153,18 @@ public static class H264Probe
                 }
                 transform.ProcessMessage(TMessageType.MessageNotifyEndStreaming, 0);
                 if (sent != received) throw new InvalidDataException($"Frame count mismatch: {sent} input, {received} output.");
-                if (scenes.Count != 0) throw new InvalidDataException("Unreleased encoded frame metadata.");
+                if (scenes.Count != 0 || submittedAt.Count!=0) throw new InvalidDataException("Unreleased encoded frame metadata.");
                 return new(frameSource?.Description ?? "generated-nv12-moving-pattern (not NX/TIA)", name, hardware, isAsync,
                     width, height, fps, sent, received, bytes, watch.Elapsed.TotalSeconds, firstMs,
-                    normalizer.CodecString ?? throw new InvalidDataException("No SPS codec configuration."), "annexb", outputTypeChanges, DateTimeOffset.Now);
+                    normalizer.CodecString ?? throw new InvalidDataException("No SPS codec configuration."), "annexb", outputTypeChanges, DateTimeOffset.Now)
+                {SourcePollMs=sourcePoll.Snapshot(),InputSubmitMs=inputSubmit.Snapshot(),EncoderResidenceMs=encoderResidence.Snapshot()};
+
+                IMFSample? PollSource()
+                {
+                    long start=Stopwatch.GetTimestamp();
+                    try{return frameSource!.TryGetSample();}
+                    finally{sourcePoll.Record(Stopwatch.GetElapsedTime(start).TotalMilliseconds);}
+                }
 
                 void BeginDrain()
                 {
@@ -192,6 +215,8 @@ public static class H264Probe
                     }
                     if (unit is null) return false;
                     var normalized = normalizer.Normalize(unit.Value.Data, unit.Value.Time / 10) with { Scene = scenes.Take(unit.Value.Time) };
+                    if(!submittedAt.Remove(unit.Value.Time,out long inputAt))throw new InvalidDataException("Encoded output lacks timing admission.");
+                    encoderResidence.Record(Stopwatch.GetElapsedTime(inputAt).TotalMilliseconds);
                     if (firstMs < 0) firstMs = watch.Elapsed.TotalMilliseconds;
                     onFrame(normalized);
                     received++;

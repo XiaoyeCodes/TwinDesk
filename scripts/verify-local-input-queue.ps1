@@ -8,7 +8,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
     & $Dotnet test tests/Workbench.Windows.Tests --no-restore -v minimal --logger 'trx;LogFileName=unit-tests.trx' --results-directory $queueRun
     if ($LASTEXITCODE -ne 0) { throw 'C# tests failed.' }
-    & $Node --test tests/scene-timeline.test.cjs tests/frame-presenter.test.cjs tests/input-client.test.cjs tests/input-move-queue.test.cjs tests/jpeg-decoder.test.cjs tests/f0-pointer-calibration.test.cjs tests/local-console.test.cjs |
+    & $Node --test tests/scene-timeline.test.cjs tests/frame-presenter.test.cjs tests/media-timings.test.cjs tests/input-client.test.cjs tests/input-move-queue.test.cjs tests/jpeg-decoder.test.cjs tests/f0-pointer-calibration.test.cjs tests/local-console.test.cjs |
         Tee-Object -FilePath (Join-Path $queueRun 'javascript.txt')
     if ($LASTEXITCODE -ne 0) { throw 'JS tests failed.' }
     & $Dotnet restore tools/Workbench.MediaProbe --locked-mode -v quiet

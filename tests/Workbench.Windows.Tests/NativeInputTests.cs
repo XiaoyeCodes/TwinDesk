@@ -58,6 +58,20 @@ public class NativeInputTests
         Assert.False(backend.TrySend(Command(InputKind.KeyDown) with {Key="KeyA"},null));Assert.Empty(transport.Batches);
         Assert.False(backend.TrySend(Command(InputKind.KeyDown) with {Key="KeyA"},null));
     }
+    [Fact] public void NativeSendTimingSeparatesGuardDenialFromSubmissionsAndRelease()
+    {
+        var denied=new NativeInputBackend(new Environment {FailAt=2},new Transport());
+        Assert.True(denied.IsTargetReady(InputSessionTests.Geometry(),null));
+        Assert.False(denied.TrySend(Command(InputKind.KeyDown) with {Key="KeyA"},null));
+        Assert.Equal(2,denied.NativeChecks.Snapshot().Total);
+        Assert.Equal(0,denied.NativeSends.Snapshot().Total);
+
+        var backend=new NativeInputBackend(new Environment(),new Transport());
+        Assert.True(backend.IsTargetReady(InputSessionTests.Geometry(),null));
+        Assert.True(backend.TrySend(Command(InputKind.KeyDown) with {Key="KeyA"},null));
+        Assert.True(backend.TryRelease([HeldInput.ForKey("KeyA")]));
+        Assert.Equal(2,backend.NativeSends.Snapshot().Total);
+    }
     [Fact] public void TextBatchesNeverSplitSurrogatePairAndStayBounded()
     {
         var transport=new Transport();var backend=new NativeInputBackend(new Environment(),transport);

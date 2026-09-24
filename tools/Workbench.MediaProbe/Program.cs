@@ -111,6 +111,12 @@ app.MapGet("/frame-presenter.js", async context =>
     using var source=typeof(Program).Assembly.GetManifestResourceStream("Workbench.MediaProbe.frame-presenter.js")!;
     await source.CopyToAsync(context.Response.Body,context.RequestAborted);
 });
+app.MapGet("/media-timings.js", async context =>
+{
+    context.Response.ContentType = "text/javascript; charset=utf-8";
+    using var source = typeof(Program).Assembly.GetManifestResourceStream("Workbench.MediaProbe.media-timings.js")!;
+    await source.CopyToAsync(context.Response.Body,context.RequestAborted);
+});
 app.MapGet("/f0-pointer-calibration.js", async context =>
 {
     context.Response.ContentType="text/javascript; charset=utf-8";

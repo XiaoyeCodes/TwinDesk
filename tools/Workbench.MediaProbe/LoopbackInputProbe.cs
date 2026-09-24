@@ -83,7 +83,7 @@ internal sealed class LoopbackInputProbe(WindowInfo root, Guid host,string scope
         public bool VideoClaimed;
         public object Diagnostics { get {lock(outcomes)return new {status=Executor.Status,nativeCode=backend.LastCode,recent=outcomes.ToArray(),
             localArmCode,localActivationAccepted,dispatchCount,meanDispatchMs=dispatchCount==0?0:dispatchTotalMs/dispatchCount,dispatchMaximumMs,
-            queueWait=Executor.QueueWait.Snapshot(),nativeDispatch=Executor.DispatchTime.Snapshot(),nativeChecks=backend.NativeChecks.Snapshot(),
+            queueWait=Executor.QueueWait.Snapshot(),nativeDispatch=Executor.DispatchTime.Snapshot(),nativeChecks=backend.NativeChecks.Snapshot(),nativeSends=backend.NativeSends.Snapshot(),
             localConsole=localBridge is null?null:new {localBridge.Active,localBridge.Reason,localBridge.PhysicalEvents,localBridge.IgnoredInjected,localBridge.QueueDiagnostics}};} }
         public Controller(WindowInfo root,Guid host,string scope,Func<WindowInfo,bool>? allowDiagnosticRoot,uint streamId,bool localConsole)
         {
