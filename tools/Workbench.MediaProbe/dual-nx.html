@@ -23,16 +23,16 @@ button{font:inherit;cursor:pointer}button:focus-visible{outline:2px solid #60c8f
 <body><div class="shell">
 <header class="topbar"><div class="brand"><div class="mark" aria-hidden="true">⌘</div><div><strong>NX 控制台</strong><small>LOCAL WORKSPACE · DUAL VIEW</small></div></div>
 <div class="topRight"><span id="sessionPill" class="pill"><i></i><span id="sessionLabel">正在连接画面</span></span><button class="button" id="refresh" type="button">重连画面</button><button class="button primary" id="takeover" type="button" disabled>开始跨栏控制</button></div></header>
-<div class="headline"><div><div class="eyebrow">本机 · 两个独立实例</div><h1>双工作区</h1><p>左右画面分别来自一个真实 NX 10 进程；保持两个 NX 窗口非最小化。</p></div><div id="modeHint" class="hint">画面就绪后，可在独立 Chrome / Edge 窗口启动本机跨栏控制。当前页面仅显示实时画面。</div></div>
+<div class="headline"><div><div class="eyebrow">本机 · 两个独立实例</div><h1>双工作区</h1><p>左右画面分别来自一个真实 NX 10 进程；保持两个 NX 窗口非最小化。</p></div><div id="modeHint" class="hint">普通 Edge 标签页只能预览。接管须按 Win+R 运行 msedge.exe --app=http://127.0.0.1:8093/ --new-window；新窗口顶部没有标签栏和地址栏。</div></div>
 <main class="grid" aria-label="双 NX 工作区">
 <section class="pane" id="leftPane" aria-label="左侧 NX"><div class="paneHead"><div class="paneIdentity"><span class="paneNumber">01</span><span class="paneName">NX 10</span><span class="paneSubtitle">左侧实例</span></div><span class="signal" id="leftSignal"><i></i><span>连接中</span></span></div><div class="screen" id="leftScreen"><iframe src="/left/" title="左侧 NX 实时画面"></iframe><div class="placeholder" id="leftPlaceholder">正在建立真实窗口流…</div><span class="corner">WORKSPACE 01</span></div><div class="paneFoot"><span>真实应用窗口 · H.264</span><span id="leftFrames">等待首帧</span></div></section>
 <section class="pane" id="rightPane" aria-label="右侧 NX"><div class="paneHead"><div class="paneIdentity"><span class="paneNumber">02</span><span class="paneName">NX 10</span><span class="paneSubtitle">右侧实例</span></div><span class="signal" id="rightSignal"><i></i><span>连接中</span></span></div><div class="screen" id="rightScreen"><iframe src="/right/" title="右侧 NX 实时画面"></iframe><div class="placeholder" id="rightPlaceholder">正在建立真实窗口流…</div><span class="corner">WORKSPACE 02</span></div><div class="paneFoot"><span>真实应用窗口 · H.264</span><span id="rightFrames">等待首帧</span></div></section>
 </main><footer class="footer"><span><strong id="footerTitle">画面连接中</strong> · <span id="footerMessage">等待两路实际解码帧。</span></span><span class="detail">鼠标自由跨栏；键盘焦点未切换时单击目标画面。按 <kbd>F12</kbd> 退出。</span></footer>
 </div><script>
 'use strict';
-const channels={left:{state:'connecting',frames:0},right:{state:'connecting',frames:0}};
-const takeover=document.getElementById('takeover'),pill=document.getElementById('sessionPill'),sessionLabel=document.getElementById('sessionLabel'),modeHint=document.getElementById('modeHint');
-let overlayActive=false,overlaySupported=false,overlaySide='',focusReady=false;
+const channels={left:{state:'connecting',frames:0,generation:0,error:''},right:{state:'connecting',frames:0,generation:0,error:''}};
+const takeover=document.getElementById('takeover'),refresh=document.getElementById('refresh'),pill=document.getElementById('sessionPill'),sessionLabel=document.getElementById('sessionLabel'),modeHint=document.getElementById('modeHint');
+let overlayActive=false,overlaySupported=false,overlaySide='',focusReady=false,reconnecting=false,lastOverlayReason='';
 function paint(){
   for(const side of ['left','right']){const c=channels[side],signal=document.getElementById(side+'Signal');signal.className='signal '+(c.state==='ready'?'ready':c.state==='error'?'error':'');
     signal.querySelector('span').textContent=c.state==='ready'?'实时画面':c.state==='error'?'连接中断':'连接中';
@@ -43,27 +43,60 @@ function paint(){
   const both=Object.values(channels).every(c=>c.state==='ready'),failed=Object.values(channels).some(c=>c.state==='error');
   pill.className='pill '+(overlayActive||both?'ready':failed?'error':'');
   sessionLabel.textContent=overlayActive?'跨栏控制中':both?'两路画面在线':failed?'画面连接异常':'正在连接画面';
-  takeover.disabled=!both||!overlaySupported&&!overlayActive;
-  takeover.textContent=overlayActive?'按 F12 退出控制':'开始跨栏控制';takeover.className='button '+(overlayActive?'stop':'primary');
-  document.getElementById('footerTitle').textContent=overlayActive?focusReady?overlaySide==='left'?'键盘目标：左侧 NX':'键盘目标：右侧 NX':'跨栏控制中':both?'两路真实画面已连接':'画面连接中';
-  document.getElementById('footerMessage').textContent=overlayActive?focusReady?'实体键鼠正由对应原生窗口接收。':'移动到画面；如键盘未切换，请单击该侧。':both?'在独立浏览器应用窗口点击“开始跨栏控制”。':'等待两路实际解码帧。';
+  takeover.disabled=reconnecting||overlayActive;
+  takeover.textContent=overlayActive?'按 F12 退出控制':overlaySupported?'开始跨栏控制':'查看接管条件';takeover.className='button '+(overlayActive?'stop':'primary');
+  const failedSide=['left','right'].find(side=>channels[side].state==='error');
+  document.getElementById('footerTitle').textContent=overlayActive?focusReady?overlaySide==='left'?'键盘目标：左侧 NX':'键盘目标：右侧 NX':'跨栏控制中':failedSide?`${failedSide==='left'?'左':'右'}侧画面断开`:both?'两路真实画面已连接':'画面连接中';
+  document.getElementById('footerMessage').textContent=overlayActive?focusReady?'实体键鼠正由对应原生窗口接收。':'移动到画面；如键盘未切换，请单击该侧。':failedSide?(channels[failedSide].error||'点击“重连画面”仅恢复断开的一侧。'):both?'在独立浏览器应用窗口点击“开始跨栏控制”。':'等待两路实际解码帧。';
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin)return;
   const side=event.source===document.querySelector('#leftScreen iframe').contentWindow?'left':event.source===document.querySelector('#rightScreen iframe').contentWindow?'right':null;
-  if(!side||event.data?.type!=='nx-stream-state'||event.data.streamId!==(side==='left'?1:2))return;
+  if(!side||event.data?.type!=='nx-stream-state'||event.data.streamId!==(side==='left'?1:2)||event.data.viewGeneration!==channels[side].generation)return;
   channels[side].frames=Number.isSafeInteger(event.data.presented)?event.data.presented:0;
-  channels[side].state=event.data.state==='ready'?'ready':event.data.state==='error'?'error':'connecting';paint();
+  channels[side].state=event.data.state==='ready'?'ready':event.data.state==='error'?'error':'connecting';
+  channels[side].error=typeof event.data.error==='string'?event.data.error.slice(0,220):'';paint();
 });
 function geometry(){return ['left','right'].map(side=>{const r=document.getElementById(side+'Screen').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};});}
 async function json(url,options){const r=await fetch(url,{cache:'no-store',...options});const data=await r.json();if(!r.ok)throw Error(data.error||`HTTP ${r.status}`);return data;}
-async function refreshOverlay(){try{const s=await json('/overlay/status');overlaySupported=s.supported===true;overlayActive=s.active===true;overlaySide=s.side||'';focusReady=s.focusReady===true;if(s.reason)modeHint.textContent=s.reason;paint();}catch(e){overlaySupported=false;modeHint.textContent=String(e);paint();}}
+async function refreshOverlay(){try{const s=await json('/overlay/status');overlaySupported=s.supported===true;overlayActive=s.active===true;overlaySide=s.side||'';focusReady=s.focusReady===true;lastOverlayReason=s.reason||'';if(s.reason)modeHint.textContent=overlaySupported||overlayActive?s.reason:`${s.reason} 打开独立窗口前请关闭此预览页，释放两路视频流。`;paint();}catch(e){overlaySupported=false;lastOverlayReason=String(e);modeHint.textContent=lastOverlayReason;paint();}}
 takeover.onclick=async()=>{
   if(overlayActive)return;
+  const missing=['left','right'].filter(side=>channels[side].state!=='ready');
+  if(missing.length){modeHint.textContent=`${missing.map(side=>side==='left'?'左侧':'右侧').join('、')}画面未就绪：请先点击“重连画面”。${missing.map(side=>channels[side].error).filter(Boolean).join('；')}`;return;}
+  if(!overlaySupported){modeHint.textContent=lastOverlayReason+' 请关闭此预览页，再用独立 Edge / Chrome 应用窗口打开 8093。';return;}
   takeover.disabled=true;
   try{const result=await json('/overlay/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({panes:geometry(),viewport:{width:innerWidth,height:innerHeight}})});modeHint.textContent=result.message;overlayActive=true;paint();}
   catch(e){modeHint.textContent='接管未启动：'+String(e);takeover.disabled=false;}
 };
-document.getElementById('refresh').onclick=()=>{for(const side of ['left','right']){channels[side]={state:'connecting',frames:0};document.querySelector(`#${side}Screen iframe`).src=`/${side}/`; }paint();};
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function waitForIdle(side){
+  for(let attempt=0;attempt<40;attempt++){
+    const state=await json(`/${side}/health/live`);
+    if(state.busy===false)return;
+    await delay(250);
+  }
+  throw Error('此路视频仍被其他页面占用；请关闭其他 8093 标签页或窗口后重连。');
+}
+refresh.onclick=async()=>{
+  if(reconnecting||overlayActive)return;
+  reconnecting=true;refresh.disabled=true;
+  const failed=['left','right'].filter(side=>channels[side].state!=='ready');
+  const targets=failed.length?failed:['left','right'];
+  try{
+    for(const side of targets){
+      channels[side].generation++;
+      channels[side].state='connecting';channels[side].frames=0;channels[side].error='';
+      document.querySelector(`#${side}Screen iframe`).src='about:blank';
+    }
+    paint();
+    for(const side of targets){
+      try{
+        await waitForIdle(side);
+        document.querySelector(`#${side}Screen iframe`).src=`/${side}/?view=${channels[side].generation}`;
+      }catch(error){channels[side].state='error';channels[side].error=String(error);paint();}
+    }
+  }finally{reconnecting=false;refresh.disabled=false;paint();}
+};
 setInterval(refreshOverlay,1000);refreshOverlay();paint();
 </script></body></html>

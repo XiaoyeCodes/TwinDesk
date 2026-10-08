@@ -19,11 +19,12 @@ const status=document.querySelector('#status'),report=document.querySelector('#r
 const start=document.querySelector('#start'),stop=document.querySelector('#stop');
 const canvas=document.querySelector('#canvas');let ctx=null,canvasMode=null;
 let active=null,inputEnabled=false,inputTarget='',selectedCodec='h264',videoSize=null,dualMode=false,expectedStream=1,localConsoleMode=false,readOnlyDualNx=false,streamFps=30;
+const viewGeneration=Number(new URLSearchParams(location.search).get('view')??0);
 let lastParentStateAt=0;
-function parentState(state,run,force=false){
+function parentState(state,run,force=false,error=''){
   if(!readOnlyDualNx||window.parent===window)return;
   const now=performance.now();if(!force&&now-lastParentStateAt<500)return;lastParentStateAt=now;
-  window.parent.postMessage({type:'nx-stream-state',streamId:expectedStream,state,presented:run?.presented??0},location.origin);
+  window.parent.postMessage({type:'nx-stream-state',streamId:expectedStream,viewGeneration,state,presented:run?.presented??0,error},location.origin);
 }
 const probePath=location.pathname.endsWith('/')?location.pathname:location.pathname+'/';
 fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable');return r.json();}).then(info=>{
@@ -62,7 +63,11 @@ fetch(probePath+'health/live').then(r=>{if(!r.ok)throw Error('source unavailable
   if(readOnlyDualNx){document.querySelector('h1').textContent=`NX 实例 ${expectedStream} · 实时只读画面`;document.title=`NX 实例 ${expectedStream} · 实时画面`;}
   start.disabled=false;
   if(readOnlyDualNx){parentState('connecting',null,true);queueMicrotask(()=>start.click());}
-}).catch(()=>{start.disabled=true;status.textContent='源状态读取失败';});
+}).catch(error=>{
+  start.disabled=true;status.textContent='源状态读取失败：'+String(error);
+  const streamId=probePath==='/left/'?1:probePath==='/right/'?2:0;
+  if(streamId&&window.parent!==window)window.parent.postMessage({type:'nx-stream-state',streamId,viewGeneration,state:'error',presented:0,error:'源状态读取失败：'+String(error)},location.origin);
+});
 start.onclick=async()=>{
   if(active||!videoSize)return;
   if(!isSecureContext||(selectedCodec==='h264'?!globalThis.VideoDecoder:!globalThis.createImageBitmap)){status.textContent='当前浏览器缺少安全上下文或所选解码能力；JPEG也不取消HTTPS要求';return;}
@@ -70,7 +75,7 @@ start.onclick=async()=>{
   active=run;start.disabled=true;stop.disabled=false;report.textContent='';status.textContent='连接并协商真实编码器…';
   const fail=error=>{
     if(run.done)return;
-    run.done=true;status.textContent='失败：'+String(error);report.textContent=JSON.stringify({status:'FAIL',error:String(error),received:run.received,decoded:run.decoded,mediaTiming:run.timings.summary()},null,2);parentState('error',run,true);cleanup();
+    run.done=true;status.textContent='失败：'+String(error);report.textContent=JSON.stringify({status:'FAIL',error:String(error),received:run.received,decoded:run.decoded,mediaTiming:run.timings.summary()},null,2);parentState('error',run,true,String(error));cleanup();
   };
   const cleanup=()=>{
     run.input?.close();run.presenter?.close();
@@ -154,7 +159,19 @@ start.onclick=async()=>{
     const chunk={type:flags?'key':'delta',timestamp:Number(timestamp),data:new Uint8Array(event.data,40)};
     run.decoder.decode(run.codec==='jpeg'?chunk:new EncodedVideoChunk(chunk));
   }).catch(fail).finally(()=>{run.pending--;});};
-  socket.onerror=()=>fail('WebSocket error');socket.onclose=()=>{run.chain=run.chain.then(()=>{if(!run.done)fail('Connection closed before complete report');});};
+  let connectionDiagnosis=null,socketOpened=false;
+  const diagnoseConnection=()=>connectionDiagnosis??=(async()=>{
+    if(run.done)return;
+    if(readOnlyDualNx&&!socketOpened){
+      try{const info=await fetch(probePath+'health/live',{cache:'no-store'}).then(r=>r.json());
+        if(info.busy){fail('此路视频正由另一页面占用；关闭其他 8093 页面后重连。');return;}}
+      catch{}
+    }
+    fail('视频连接中断');
+  })();
+  socket.onopen=()=>{socketOpened=true;};
+  socket.onerror=()=>{void diagnoseConnection();};
+  socket.onclose=()=>{run.chain=run.chain.then(diagnoseConnection);};
 };
 stop.onclick=()=>active?.cancel();
 </script></html>

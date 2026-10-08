@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using Workbench.Windows;
 
 // Same-desktop, single-user experiment: a dedicated browser stays visually on top
@@ -8,11 +9,16 @@ using Workbench.Windows;
 // There is no synthetic NX UI or background PostMessage input path.
 internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDisposable
 {
+    private const string BrowserInstruction = "当前是普通 Edge/Chrome 标签页或内置浏览器，只能看画面。先关闭此预览页，再按 Win+R 运行 msedge.exe --app=http://127.0.0.1:8093/ --new-window；独立应用窗口顶部没有标签栏和地址栏。";
     private const int ExStyle = -20, Layered = 0x80000, Transparent = 0x20;
     private const int SwpNoActivate = 0x10, SwpNoMove = 0x02, SwpNoSize = 0x01, SwpShowWindow = 0x40;
+    private const int SwpKeepGeometry = SwpNoMove | SwpNoSize | SwpNoActivate;
+    private const int MaxOccluders = 8;
     private readonly object gate = new();
     private Session? session;
     private string? lastReason;
+    private int lastOccluderCount;
+    private bool? lastRestoreVerified;
 
     public object Status()
     {
@@ -23,12 +29,14 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
             {
                 supported = (browser != 0 && GetForegroundWindow() == browser) || session is not null,
                 active = session is not null,
+                minimizedOccluders = session?.Occluders.Count ?? lastOccluderCount,
+                lastRestoreVerified,
                 side = session?.Side ?? "",
                 focusReady = session is { } current &&
                     (current.Side == "left" && GetForegroundWindow() == (nint)left.Handle ||
                      current.Side == "right" && GetForegroundWindow() == (nint)right.Handle),
                 reason = session is null ? lastReason ?? (browser == 0
-                    ? "请在独立 Chrome / Edge 应用窗口打开 127.0.0.1:8093；内置浏览器和普通标签页不支持跨栏接管。"
+                    ? BrowserInstruction
                     : GetForegroundWindow() != browser
                         ? "请切换到独立 Chrome / Edge 应用窗口后开始跨栏控制。"
                         : "两个 NX 实例已绑定。点击开始后，浏览器画面留在最前，实体键鼠直接进入下方真实 NX；F12 退出。")
@@ -49,7 +57,7 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
             if (session is not null) throw new InvalidOperationException("跨栏控制已在运行。");
             if (request.Panes is not { Length: 2 } || request.Viewport is null) throw new InvalidOperationException("缺少双栏几何。");
             var browser = FindBrowser();
-            if (browser == 0) throw new InvalidOperationException("未找到独立 Chrome / Edge 应用窗口；不能修改内置浏览器。");
+            if (browser == 0) throw new InvalidOperationException(BrowserInstruction);
             if (GetForegroundWindow() != browser) throw new InvalidOperationException("请在独立浏览器窗口内点击连接。");
             if (!WindowsInputEnvironment.InteractiveDesktop()) throw new InvalidOperationException("桌面已锁定或不是交互桌面。");
             VerifyNx();
@@ -90,20 +98,18 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
                 if (!SetLayeredWindowAttributes(browser, 0, 255, 2) ||
                     !SetWindowPos(browser, -1, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate))
                     throw new Win32Exception(Marshal.GetLastWin32Error());
-                for (int i = 0; i < 2; i++)
-                {
-                    nint nx = (nint)(i == 0 ? left.Handle : right.Handle);
-                    if (!WindowAt(nx, rects[i]))
-                        throw new InvalidOperationException("视频栏下方未命中对应 NX 原生窗口；已撤销接管。");
-                }
+                ResolveOcclusion(next);
                 session = next;
                 _ = Task.Run(() => Monitor(next));
+                lastOccluderCount = next.Occluders.Count;
+                lastRestoreVerified = null;
                 lastReason = null;
-                return "已对齐两个真实 NX 窗口。鼠标可自由跨栏；键盘焦点未切换时单击目标画面。按 F12 退出并恢复窗口。";
+                return $"已对齐两个真实 NX 窗口；临时最小化 {next.Occluders.Count} 个遮挡窗口。鼠标可自由跨栏；按 F12 退出并恢复原窗口。";
             }
             catch
             {
-                Restore(next);
+                lastOccluderCount = next.Occluders.Count;
+                lastRestoreVerified = Restore(next);
                 throw;
             }
         }
@@ -112,6 +118,7 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
     private void Monitor(Session current)
     {
         string reason = "F12 已退出，窗口布局已恢复。";
+        int iterations = 0;
         try
         {
             while (true)
@@ -129,6 +136,8 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
                 if (!AtExpectedRect((nint)left.Handle, current.Rects[0]) ||
                     !AtExpectedRect((nint)right.Handle, current.Rects[1]))
                 { reason = "NX 窗口位置或尺寸改变，接管已停止。"; break; }
+                if (++iterations % 6 == 0 && !SurfacesClear(current))
+                { reason = "有其他窗口重新遮挡 NX，接管已停止并恢复原窗口。"; break; }
                 if (GetCursorPos(out var cursor))
                 {
                     int i = current.Rects[0].Contains(cursor) ? 0 : current.Rects[1].Contains(cursor) ? 1 : -1;
@@ -145,7 +154,12 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
         {
             lock (gate)
             {
-                if (ReferenceEquals(session, current)) { Restore(current); session = null; lastReason = reason; }
+                if (ReferenceEquals(session, current))
+                {
+                    lastRestoreVerified = Restore(current);
+                    session = null;
+                    lastReason = lastRestoreVerified == true ? reason : reason + "；部分窗口恢复未确认，请检查原桌面布局。";
+                }
             }
         }
     }
@@ -203,26 +217,123 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
         GetWindowRect(hwnd, out var actual) &&
         Math.Abs(actual.Left - expected.Left) <= 3 && Math.Abs(actual.Top - expected.Top) <= 3 &&
         Math.Abs(actual.Right - expected.Right) <= 3 && Math.Abs(actual.Bottom - expected.Bottom) <= 3;
-    private static bool WindowAt(nint hwnd, Rect rect)
+    private void ResolveOcclusion(Session current)
     {
-        if (!AtExpectedRect(hwnd, rect)) return false;
-        var center = new Point { X = rect.Left + (rect.Right - rect.Left) / 2,
-            Y = rect.Top + (rect.Bottom - rect.Top) / 2 };
-        nint hit = WindowFromPhysicalPoint(center);
-        return hit != 0 && GetAncestor(hit, 2) == hwnd;
+        for (int side = 0; side < 2; side++)
+        {
+            nint nx = (nint)(side == 0 ? left.Handle : right.Handle);
+            if (!AtExpectedRect(nx, current.Rects[side]))
+                throw new InvalidOperationException("NX 窗口对齐失败，已撤销接管。");
+            foreach (var point in CheckPoints(current.Rects[side]))
+            {
+                nint hit = HitRoot(point);
+                if (TargetHit(hit, side)) continue;
+                // A normal window may have moved above NX while the browser was raised.
+                // Try the reversible Z-order move before minimizing any other app.
+                if (!SetWindowPos(nx, 0, 0, 0, 0, 0, SwpKeepGeometry))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                hit = HitRoot(point);
+                while (!TargetHit(hit, side))
+                {
+                    if (current.Occluders.Count >= MaxOccluders)
+                        throw new InvalidOperationException("遮挡窗口超过安全上限；已撤销接管。");
+                    MinimizeOccluder(hit, current);
+                    hit = HitRoot(point);
+                }
+            }
+        }
     }
-    private void Restore(Session current)
+
+    private bool SurfacesClear(Session current) =>
+        Enumerable.Range(0, 2).All(side => CheckPoints(current.Rects[side])
+            .All(point => TargetHit(HitRoot(point), side)));
+
+    private bool TargetHit(nint hit, int side)
     {
+        if (hit == (nint)(side == 0 ? left.Handle : right.Handle)) return true;
+        if (hit == 0) return false;
+        GetWindowThreadProcessId(hit, out uint pid);
+        return pid == (uint)(side == 0 ? left.ProcessId : right.ProcessId);
+    }
+
+    private void MinimizeOccluder(nint hit, Session current)
+    {
+        if (hit == 0 || hit == current.Browser || hit == (nint)left.Handle || hit == (nint)right.Handle)
+            throw new InvalidOperationException("视频栏下方未命中目标 NX，且遮挡者不可最小化；已撤销接管。");
+        if (!IsWindow(hit) || !IsWindowVisible(hit) || IsIconic(hit) || GetAncestor(hit, 2) != hit)
+            throw new InvalidOperationException("遮挡窗口身份不稳定；已撤销接管。");
+        GetWindowThreadProcessId(hit, out uint pid);
+        if (pid == 0 || pid == (uint)left.ProcessId || pid == (uint)right.ProcessId)
+            throw new InvalidOperationException("NX 关联窗口或未知窗口遮挡视频栏；不会自动最小化，已撤销接管。");
+        var className = new StringBuilder(128);
+        if (GetClassNameW(hit, className, className.Capacity) == 0 ||
+            className.ToString() is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Progman" or "WorkerW")
+            throw new InvalidOperationException("系统桌面窗口遮挡视频栏；不会自动最小化，已撤销接管。");
+        try
+        {
+            using var process = Process.GetProcessById((int)pid);
+            if (process.SessionId != left.SessionId)
+                throw new InvalidOperationException("其他用户会话窗口遮挡视频栏；已撤销接管。");
+        }
+        catch (ArgumentException)
+        {
+            throw new InvalidOperationException("遮挡窗口进程已退出；已撤销接管。");
+        }
+        var placement = Placement(hit);
+        current.Occluders.Add(new Occluder(hit, placement));
+        if (!ShowWindowAsync(hit, 6))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "遮挡窗口无法最小化；已撤销接管。");
+        for (int i = 0; i < 10 && !IsIconic(hit); i++) Thread.Sleep(40);
+        if (!IsIconic(hit)) throw new InvalidOperationException("遮挡窗口未最小化；已撤销接管。");
+    }
+
+    private static nint HitRoot(Point point)
+    {
+        nint hit = WindowFromPhysicalPoint(point);
+        return hit == 0 ? 0 : GetAncestor(hit, 2);
+    }
+
+    private static Point[] CheckPoints(Rect rect)
+    {
+        int x = Math.Clamp((rect.Right - rect.Left) / 8, 12, 80);
+        int y = Math.Clamp((rect.Bottom - rect.Top) / 8, 12, 80);
+        return [
+            new Point { X = rect.Left + (rect.Right - rect.Left) / 2, Y = rect.Top + (rect.Bottom - rect.Top) / 2 },
+            new Point { X = rect.Left + x, Y = rect.Top + y },
+            new Point { X = rect.Right - x, Y = rect.Top + y },
+            new Point { X = rect.Left + x, Y = rect.Bottom - y },
+            new Point { X = rect.Right - x, Y = rect.Bottom - y }
+        ];
+    }
+    private bool Restore(Session current)
+    {
+        bool restored = true;
         if (IsWindow(current.Browser))
         {
-            SetWindowLongPtrW(current.Browser, ExStyle, current.OriginalStyle);
-            SetWindowPos(current.Browser, current.BrowserTopmost ? -1 : -2, 0, 0, 0, 0,
-                SwpNoMove | SwpNoSize | SwpNoActivate);
+            SetLastError(0);
+            nint prior = SetWindowLongPtrW(current.Browser, ExStyle, current.OriginalStyle);
+            if (prior == 0 && Marshal.GetLastWin32Error() != 0) restored = false;
+            if (!SetWindowPos(current.Browser, current.BrowserTopmost ? -1 : -2, 0, 0, 0, 0,
+                SwpKeepGeometry)) restored = false;
         }
-        if (IsWindow((nint)left.Handle)) { var p = current.LeftPlacement; SetWindowPlacement((nint)left.Handle, ref p); }
-        if (IsWindow((nint)right.Handle)) { var p = current.RightPlacement; SetWindowPlacement((nint)right.Handle, ref p); }
+        if (!RestorePlacement((nint)left.Handle, current.LeftPlacement)) restored = false;
+        if (!RestorePlacement((nint)right.Handle, current.RightPlacement)) restored = false;
+        for (int i = current.Occluders.Count - 1; i >= 0; i--)
+        {
+            var item = current.Occluders[i];
+            if (!RestorePlacement(item.Handle, item.Placement)) restored = false;
+        }
+        return restored;
     }
-    public void Dispose() { lock (gate) { if (session is { } s) { Restore(s); session = null; } } }
+    private static bool RestorePlacement(nint hwnd, WindowPlacement original)
+    {
+        if (!IsWindow(hwnd)) return true;
+        var placement = original;
+        if (!SetWindowPlacement(hwnd, ref placement)) return false;
+        for (int wait = 0; wait < 10 && IsIconic(hwnd); wait++) Thread.Sleep(40);
+        return !IsIconic(hwnd);
+    }
+    public void Dispose() { lock (gate) { if (session is { } s) { lastRestoreVerified = Restore(s); session = null; } } }
 
     private sealed class Session(nint browser, nint originalStyle, bool browserTopmost,
         WindowPlacement leftPlacement, WindowPlacement rightPlacement, Rect[] rects)
@@ -233,11 +344,13 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
         public WindowPlacement LeftPlacement { get; } = leftPlacement;
         public WindowPlacement RightPlacement { get; } = rightPlacement;
         public Rect[] Rects { get; } = rects;
+        public List<Occluder> Occluders { get; } = [];
         public Point Origin { get; } = ClientOrigin(browser);
         public int ClientWidth { get; } = ClientSize(browser).Right;
         public int ClientHeight { get; } = ClientSize(browser).Bottom;
         public volatile string Side = "";
     }
+    private sealed record Occluder(nint Handle, WindowPlacement Placement);
     private static Point ClientOrigin(nint hwnd) { var p = new Point(); ClientToScreen(hwnd, ref p); return p; }
     private static Rect ClientSize(nint hwnd) { GetClientRect(hwnd, out var r); return r; }
 
@@ -257,7 +370,10 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint WindowFromPhysicalPoint(Point point);
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint hwnd);
     [DllImport("user32.dll")] private static extern bool IsIconic(nint hwnd);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetClassNameW(nint hwnd, StringBuilder className, int maxCount);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
@@ -267,6 +383,7 @@ internal sealed class DualNxOverlay(WindowInfo left, WindowInfo right) : IDispos
     [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowPlacement(nint hwnd, ref WindowPlacement placement);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPlacement(nint hwnd, ref WindowPlacement placement);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool ShowWindow(nint hwnd, int command);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool ShowWindowAsync(nint hwnd, int command);
     [DllImport("user32.dll", SetLastError = true)] private static extern nint GetWindowLongPtrW(nint hwnd, int index);
     [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowLongPtrW(nint hwnd, int index, nint value);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetLayeredWindowAttributes(nint hwnd, uint key, byte alpha, uint flags);
